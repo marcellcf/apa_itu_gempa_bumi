@@ -5,29 +5,30 @@ Jalankan di laptop:
   pip install -r requirements.txt
   streamlit run app.py
 
-SUARA NARATOR
-  - Kalau ada ElevenLabs API key  -> suara ElevenLabs (paling natural).
-  - Kalau tidak ada                -> suara Microsoft "Ardi" (gratis, cadangan).
-  API key ditaruh di file .streamlit/secrets.toml (lihat README.md),
+SUARA NARATOR (ekspresif, intonasi naik-turun)
+  - GEMINI_API_KEY      -> suara Google Gemini TTS  (GRATIS, ambil key di aistudio.google.com)
+  - ELEVENLABS_API_KEY  -> suara ElevenLabs          (kalau diisi, dipakai lebih dulu)
+  Taruh key di file .streamlit/secrets.toml (lihat README.md),
   atau di menu Secrets saat deploy ke Streamlit Community Cloud.
 
-  Suara dibuat otomatis saat pertama kali dibuka lalu disimpan di folder
+  Suara dibuat otomatis saat pertama kali dibuka, lalu disimpan di folder
   "suara_narator". Upload folder itu ke GitHub juga supaya versi online
-  tidak perlu membuat ulang (hemat kuota ElevenLabs).
+  langsung bersuara tanpa membuat ulang (hemat kuota gratis).
 
 Ukuran: YouTube 16:9 atau TikTok 9:16 (pilih di atas video).
 """
 
-import asyncio
 import base64
 import hashlib
-import importlib
+import io
 import json
 import os
-import subprocess
-import sys
+import re
+import time
+import wave
 from pathlib import Path
 
+import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -44,7 +45,6 @@ st.markdown(
       [data-testid="stWidgetLabel"] *, [data-testid="stMarkdownContainer"] *,
       header[data-testid="stHeader"] *, [data-testid="stStatusWidget"] * { color: #eef0ff !important; }
       [data-testid="stTooltipIcon"] svg, header[data-testid="stHeader"] svg { fill: #c9cdf0 !important; color: #c9cdf0 !important; }
-      .stSpinner * { color: #ffc95a !important; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -55,48 +55,52 @@ st.markdown(
 # ---------------------------------------------------------------------------
 FOLDER_SUARA = Path(__file__).parent / "suara_narator"
 
-# ElevenLabs — voice_id bisa diganti dengan suara lain dari Voice Library ElevenLabs
-# (cari suara berbahasa Indonesia, lalu salin ID-nya ke secrets: ELEVENLABS_VOICE_ID).
-ELEVENLABS_VOICE_DEFAULT = "JBFqnCBsd6RMkjVDRZzb"   # "George": hangat, cocok untuk narator
-ELEVENLABS_MODEL = "eleven_multilingual_v2"         # model yang fasih Bahasa Indonesia
-ELEVENLABS_PENGATURAN = {"stability": 0.5, "similarity_boost": 0.8, "style": 0.3, "use_speaker_boost": True}
+# Gemini TTS (gratis). Nama suara lain yang bisa dicoba: "Puck" (ceria), "Achird" (ramah),
+# "Sadaltager" (berwawasan), "Kore" (tegas, perempuan), "Aoede" (santai, perempuan), "Charon" (informatif).
+GEMINI_MODEL = "gemini-3.8-flash-tts"
+GEMINI_MODEL_CADANGAN = "gemini-2.5-flash-preview-tts"
+GEMINI_SUARA = "Puck"
+GAYA_DASAR = ("Indonesian narrator of a fun educational YouTube animation, speaking natural Indonesian "
+              "with lively, expressive intonation that rises and falls, clear pacing, never monotone. Mood: ")
 
-# Cadangan gratis tanpa API key: suara Microsoft. Nada & kecepatan dibiarkan asli supaya tidak robotik.
-EDGE_SUARA = {"voice": "id-ID-ArdiNeural", "rate": "+0%", "pitch": "+0Hz"}
+# ElevenLabs (opsional, dipakai kalau ELEVENLABS_API_KEY diisi)
+ELEVENLABS_VOICE_DEFAULT = "JBFqnCBsd6RMkjVDRZzb"
+ELEVENLABS_MODEL = "eleven_multilingual_v2"
+ELEVENLABS_PENGATURAN = {"stability": 0.4, "similarity_boost": 0.8, "style": 0.45, "use_speaker_boost": True}
 
-# Semua kalimat narasi di video. Teksnya harus sama persis dengan di animasi.
+# Semua kalimat narasi di video: (teks, suasana). Teks harus sama persis dengan di animasi.
 NARASI = [
-    "Pernah nggak, lagi santai tiba-tiba lantai bergoyang?",
-    "Itu namanya gempa bumi. Tapi… sebenarnya kenapa bisa terjadi?",
-    "Untuk tahu jawabannya, kita intip dulu isi Bumi.",
-    "Paling luar ada kerak, lapisan tipis tempat kita berpijak.",
-    "Di bawahnya ada mantel yang panas, lalu inti Bumi yang super panas.",
-    "Nah, yang penting buat gempa adalah kerak ini.",
-    "Kerak Bumi ternyata tidak utuh. Ia terpecah jadi potongan raksasa bernama lempeng tektonik.",
-    "Lempeng-lempeng ini terus bergerak, beberapa sentimeter setiap tahun.",
-    "Kurang lebih secepat kuku kita tumbuh!",
-    "Indonesia letaknya istimewa: di pertemuan tiga lempeng besar.",
-    "Lempeng Eurasia, Indo-Australia, dan Pasifik saling dorong di bawah negeri kita.",
-    "Makanya Indonesia termasuk negara yang paling sering gempa.",
-    "Di batas lempeng, dua lempeng bisa saling mengunci.",
-    "Tekanannya terus menumpuk, seperti penggaris yang kita bengkokkan pelan-pelan…",
-    "…sampai akhirnya tidak kuat dan lepas tiba-tiba!",
-    "Energi yang lepas itu menyebar sebagai getaran. Itulah gempa bumi.",
-    "Titik asal gempa di dalam Bumi disebut hiposentrum.",
-    "Sedangkan titik di permukaan tepat di atasnya disebut episentrum.",
-    "Getaran gempa merambat sebagai gelombang seismik.",
-    "Gelombang P datang duluan: lebih cepat, tapi lebih lemah.",
-    "Lalu gelombang S menyusul: lebih lambat, tapi guncangannya lebih kuat.",
-    "Kekuatan gempa diukur dengan magnitudo.",
-    "Naik satu angka saja, energinya kira-kira tiga puluh dua kali lipat!",
-    "Kalau gempanya kuat dan terjadi di bawah laut, dasar laut bisa terangkat…",
-    "…dan mendorong air laut menjadi gelombang tsunami.",
-    "Terus, kalau gempa datang, kita harus apa?",
-    "Merunduk, berlindung di bawah meja yang kuat, dan berpegangan.",
-    "Jauhi kaca dan lemari yang bisa roboh.",
-    "Kalau kamu di pantai dan gempanya kuat, segera lari ke tempat tinggi!",
-    "Jadi, gempa bumi terjadi karena lempeng Bumi bergerak dan melepas energi secara tiba-tiba.",
-    "Tetap tenang, dan selalu siaga ya!",
+    ("Pernah nggak, lagi santai tiba-tiba lantai bergoyang?", "curious and playful, like asking the viewer a fun question"),
+    ("Itu namanya gempa bumi. Tapi… sebenarnya kenapa bisa terjadi?", "intriguing and suspenseful, rising curiosity at the end of the question"),
+    ("Untuk tahu jawabannya, kita intip dulu isi Bumi.", "friendly and curious, inviting"),
+    ("Paling luar ada kerak, lapisan tipis tempat kita berpijak.", "clear and explanatory"),
+    ("Di bawahnya ada mantel yang panas, lalu inti Bumi yang super panas.", "impressed, emphasize 'super panas'"),
+    ("Nah, yang penting buat gempa adalah kerak ini.", "pointed and engaging, like revealing a key clue"),
+    ("Kerak Bumi ternyata tidak utuh. Ia terpecah jadi potongan raksasa bernama lempeng tektonik.", "surprised discovery, emphasize 'lempeng tektonik'"),
+    ("Lempeng-lempeng ini terus bergerak, beberapa sentimeter setiap tahun.", "calm and informative"),
+    ("Kurang lebih secepat kuku kita tumbuh!", "playful and amused, a little laugh in the voice"),
+    ("Indonesia letaknya istimewa: di pertemuan tiga lempeng besar.", "proud and engaging"),
+    ("Lempeng Eurasia, Indo-Australia, dan Pasifik saling dorong di bawah negeri kita.", "energetic, listing the three names clearly"),
+    ("Makanya Indonesia termasuk negara yang paling sering gempa.", "serious but warm, emphasize 'paling sering gempa'"),
+    ("Di batas lempeng, dua lempeng bisa saling mengunci.", "calm with a hint of tension"),
+    ("Tekanannya terus menumpuk, seperti penggaris yang kita bengkokkan pelan-pelan…", "slowly building tension, stretching the last words"),
+    ("…sampai akhirnya tidak kuat dan lepas tiba-tiba!", "dramatic and sudden, strong emphasis on 'tiba-tiba'"),
+    ("Energi yang lepas itu menyebar sebagai getaran. Itulah gempa bumi.", "serious, clear, satisfying conclusion"),
+    ("Titik asal gempa di dalam Bumi disebut hiposentrum.", "clear and informative"),
+    ("Sedangkan titik di permukaan tepat di atasnya disebut episentrum.", "clear and informative, emphasize 'episentrum'"),
+    ("Getaran gempa merambat sebagai gelombang seismik.", "informative and energetic"),
+    ("Gelombang P datang duluan: lebih cepat, tapi lebih lemah.", "quick and light, emphasize 'duluan'"),
+    ("Lalu gelombang S menyusul: lebih lambat, tapi guncangannya lebih kuat.", "heavier and more intense, emphasize 'lebih kuat'"),
+    ("Kekuatan gempa diukur dengan magnitudo.", "clear and confident"),
+    ("Naik satu angka saja, energinya kira-kira tiga puluh dua kali lipat!", "amazed and emphatic, emphasize 'tiga puluh dua kali lipat'"),
+    ("Kalau gempanya kuat dan terjadi di bawah laut, dasar laut bisa terangkat…", "serious and tense"),
+    ("…dan mendorong air laut menjadi gelombang tsunami.", "urgent and grave"),
+    ("Terus, kalau gempa datang, kita harus apa?", "friendly and caring question"),
+    ("Merunduk, berlindung di bawah meja yang kuat, dan berpegangan.", "instructive, calm and reassuring, clear pauses between the three steps"),
+    ("Jauhi kaca dan lemari yang bisa roboh.", "firm friendly warning"),
+    ("Kalau kamu di pantai dan gempanya kuat, segera lari ke tempat tinggi!", "urgent but caring, emphasize 'tempat tinggi'"),
+    ("Jadi, gempa bumi terjadi karena lempeng Bumi bergerak dan melepas energi secara tiba-tiba.", "warm, concluding summary"),
+    ("Tetap tenang, dan selalu siaga ya!", "cheerful and encouraging sign-off, smiling voice"),
 ]
 
 
@@ -112,24 +116,30 @@ def ambil_rahasia(nama):
 
 ELEVENLABS_KEY = ambil_rahasia("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE = ambil_rahasia("ELEVENLABS_VOICE_ID") or ELEVENLABS_VOICE_DEFAULT
-PENYEDIA = "elevenlabs" if ELEVENLABS_KEY else "microsoft"
+GEMINI_KEY = ambil_rahasia("GEMINI_API_KEY")
+GEMINI_SUARA = ambil_rahasia("GEMINI_VOICE") or GEMINI_SUARA
+PENYEDIA = "elevenlabs" if ELEVENLABS_KEY else "gemini" if GEMINI_KEY else None
 
 
-def identitas(teks):
-    """Sidik suara: berubah kalau penyedia, suara, atau teksnya berubah."""
+class KuotaHabis(Exception):
+    pass
+
+
+def identitas(teks, gaya):
     if PENYEDIA == "elevenlabs":
         data = ["elevenlabs", ELEVENLABS_VOICE, ELEVENLABS_MODEL, ELEVENLABS_PENGATURAN, teks]
     else:
-        data = ["microsoft", EDGE_SUARA, teks]
+        data = ["gemini", GEMINI_SUARA, GAYA_DASAR + gaya, teks]
     return hashlib.md5(json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:12]
 
 
-def file_suara(teks):
-    return FOLDER_SUARA / f"{PENYEDIA}_{identitas(teks)}.mp3"
+def file_suara(teks, gaya):
+    ekstensi = "mp3" if PENYEDIA == "elevenlabs" else "wav"
+    return FOLDER_SUARA / f"{PENYEDIA}_{identitas(teks, gaya)}.{ekstensi}"
 
 
-# daftar.json mencatat file mana untuk kalimat mana, supaya rekaman ElevenLabs yang sudah
-# di-upload ke GitHub tetap dipakai walaupun server tidak punya API key.
+# daftar.json mencatat file mana untuk kalimat mana, supaya rekaman yang sudah di-upload
+# ke GitHub tetap dipakai walaupun server tidak punya API key.
 DAFTAR = FOLDER_SUARA / "daftar.json"
 
 
@@ -140,21 +150,26 @@ def baca_daftar():
         return {}
 
 
-def catat(teks):
+def catat(teks, gaya):
     daftar = baca_daftar()
     lama = daftar.get(teks, {}).get("file")
-    if lama and lama != file_suara(teks).name:
+    baru = file_suara(teks, gaya).name
+    if lama and lama != baru:
         (FOLDER_SUARA / lama).unlink(missing_ok=True)  # buang rekaman lama yang sudah diganti
-    daftar[teks] = {"file": file_suara(teks).name, "penyedia": PENYEDIA, "id": identitas(teks)}
+    daftar[teks] = {"file": baru, "penyedia": PENYEDIA, "id": identitas(teks, gaya)}
     DAFTAR.write_text(json.dumps(daftar, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
-def perlu_dibuat(teks, daftar):
+def perlu_dibuat(teks, gaya, daftar):
     isi = daftar.get(teks)
     if not isi or not (FOLDER_SUARA / isi["file"]).exists():
         return True
-    # ada API key tapi rekamannya beda suara / masih suara Microsoft -> buat ulang pakai ElevenLabs
-    return PENYEDIA == "elevenlabs" and isi["id"] != identitas(teks)
+    if not PENYEDIA:
+        return False
+    if isi.get("penyedia") == "microsoft":
+        return True  # suara Microsoft lama diganti
+    # suara/gaya berubah untuk penyedia yang sama -> buat ulang
+    return isi.get("penyedia") == PENYEDIA and isi["id"] != identitas(teks, gaya)
 
 
 def simpan_utuh(tujuan, data):
@@ -163,79 +178,135 @@ def simpan_utuh(tujuan, data):
     sementara.replace(tujuan)  # baru dianggap jadi kalau file tersimpan utuh
 
 
-def rekam_elevenlabs(yang_kurang):
-    import requests
+def pcm_ke_wav(pcm, rate=24000):
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(pcm)
+    return buf.getvalue()
 
+
+def cari_audio(obj):
+    """Cari potongan audio base64 terakhir di dalam jawaban JSON (bentuknya bisa berbeda antar versi API)."""
+    ketemu = None
+    if isinstance(obj, dict):
+        if obj.get("type") == "audio" and isinstance(obj.get("data"), str):
+            ketemu = (obj["data"], obj.get("mime_type") or obj.get("mimeType") or "")
+        if isinstance(obj.get("inlineData"), dict) and obj["inlineData"].get("data"):
+            ketemu = (obj["inlineData"]["data"], obj["inlineData"].get("mimeType", ""))
+        for v in obj.values():
+            ketemu = cari_audio(v) or ketemu
+    elif isinstance(obj, list):
+        for v in obj:
+            ketemu = cari_audio(v) or ketemu
+    return ketemu
+
+
+def jadikan_wav(b64, mime):
+    data = base64.b64decode(b64)
+    if data[:4] == b"RIFF":
+        return data
+    cocok = re.search(r"rate=(\d+)", mime or "")
+    return pcm_ke_wav(data, int(cocok.group(1)) if cocok else 24000)
+
+
+def minta_gemini(teks, gaya):
+    """Satu permintaan ke Gemini TTS. Coba model terbaru dulu, lalu model cadangan."""
+    kepala = {"x-goog-api-key": GEMINI_KEY, "Content-Type": "application/json"}
+    badan_baru = {
+        "model": GEMINI_MODEL,
+        "input": [{"type": "user_input", "content": [{
+            "type": "text", "text": teks,
+            "annotations": [{"type": "speech_metadata", "style": GAYA_DASAR + gaya}],
+        }]}],
+        "response_format": {"type": "audio"},
+        "generation_config": {"speech_config": [{"voice": GEMINI_SUARA}]},
+    }
+    r = requests.post("https://generativelanguage.googleapis.com/v1beta/interactions", headers=kepala, json=badan_baru, timeout=120)
+    if r.status_code in (400, 404) and "quota" not in r.text.lower():
+        badan_lama = {
+            "contents": [{"parts": [{"text": f"Bacakan dengan gaya: {GAYA_DASAR + gaya}\n\n{teks}"}]}],
+            "generationConfig": {"responseModalities": ["AUDIO"],
+                                 "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": GEMINI_SUARA}}}},
+        }
+        r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_CADANGAN}:generateContent",
+                          headers=kepala, json=badan_lama, timeout=120)
+    return r
+
+
+def rekam_gemini(yang_kurang, progres):
+    for i, (teks, gaya) in enumerate(yang_kurang, start=1):
+        progres.progress((i - 1) / len(yang_kurang), text=f"Membuat suara narator (Gemini) {i}/{len(yang_kurang)}…")
+        for coba in range(6):
+            r = minta_gemini(teks, gaya)
+            if r.status_code == 200:
+                break
+            if r.status_code == 429:
+                if "PerDay" in r.text or "per day" in r.text.lower():
+                    raise KuotaHabis(f"{i - 1} dari {len(yang_kurang)} kalimat selesai")
+                jeda = re.search(r'"retryDelay":\s*"(\d+)', r.text)
+                tunggu = min(65, int(jeda.group(1)) + 2 if jeda else 20)
+                progres.progress((i - 1) / len(yang_kurang), text=f"Kuota gratis per menit penuh, menunggu {tunggu} detik… ({i - 1}/{len(yang_kurang)} selesai)")
+                time.sleep(tunggu)
+                continue
+            raise RuntimeError(f"Gemini menolak ({r.status_code}): {r.text[:300]}")
+        else:
+            raise KuotaHabis(f"{i - 1} dari {len(yang_kurang)} kalimat selesai")
+        audio = cari_audio(r.json())
+        if not audio:
+            raise RuntimeError("Jawaban Gemini tidak berisi audio.")
+        simpan_utuh(file_suara(teks, gaya), jadikan_wav(*audio))
+        catat(teks, gaya)
+
+
+def rekam_elevenlabs(yang_kurang, progres):
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE}?output_format=mp3_44100_128"
     kepala = {"xi-api-key": ELEVENLABS_KEY, "Content-Type": "application/json", "Accept": "audio/mpeg"}
-    progres = st.progress(0.0, text="Membuat suara narator (ElevenLabs)…")
-    for i, teks in enumerate(yang_kurang, start=1):
+    for i, (teks, gaya) in enumerate(yang_kurang, start=1):
+        progres.progress((i - 1) / len(yang_kurang), text=f"Membuat suara narator (ElevenLabs) {i}/{len(yang_kurang)}…")
         badan = {"text": teks, "model_id": ELEVENLABS_MODEL, "language_code": "id", "voice_settings": ELEVENLABS_PENGATURAN}
         r = requests.post(url, headers=kepala, json=badan, timeout=60)
         if r.status_code == 400 and "language_code" in r.text:
-            badan.pop("language_code")  # model lama tidak menerima language_code
+            badan.pop("language_code")
             r = requests.post(url, headers=kepala, json=badan, timeout=60)
         if r.status_code != 200:
             raise RuntimeError(f"ElevenLabs menolak ({r.status_code}): {r.text[:200]}")
-        simpan_utuh(file_suara(teks), r.content)
-        catat(teks)
-        progres.progress(i / len(yang_kurang), text=f"Membuat suara narator (ElevenLabs) {i}/{len(yang_kurang)}")
-    progres.empty()
-
-
-def rekam_microsoft(yang_kurang):
-    try:
-        import edge_tts
-    except ModuleNotFoundError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "edge-tts"])
-        importlib.invalidate_caches()
-        import edge_tts
-
-    async def satu(teks):
-        rekaman = edge_tts.Communicate(teks, EDGE_SUARA["voice"], rate=EDGE_SUARA["rate"], pitch=EDGE_SUARA["pitch"])
-        tujuan = file_suara(teks)
-        sementara = tujuan.with_suffix(".tmp")
-        await rekaman.save(str(sementara))
-        sementara.replace(tujuan)
-
-    async def semua():
-        await asyncio.gather(*(satu(t) for t in yang_kurang))
-
-    with st.spinner("Menyiapkan suara narator… (cuma pertama kali, beberapa detik)"):
-        asyncio.run(semua())
-    for teks in yang_kurang:
-        catat(teks)
+        simpan_utuh(file_suara(teks, gaya), r.content)
+        catat(teks, gaya)
 
 
 def rekam_narasi(yang_kurang):
     FOLDER_SUARA.mkdir(exist_ok=True)
-    if PENYEDIA == "elevenlabs":
-        rekam_elevenlabs(yang_kurang)
-    else:
-        rekam_microsoft(yang_kurang)
+    progres = st.progress(0.0, text="Menyiapkan suara narator…")
+    try:
+        (rekam_elevenlabs if PENYEDIA == "elevenlabs" else rekam_gemini)(yang_kurang, progres)
+    finally:
+        progres.empty()
 
 
 @st.cache_data(show_spinner=False)
 def baca_narasi(daftar_file):
     hasil = {}
     for teks, path, _waktu_ubah in daftar_file:
-        data = base64.b64encode(Path(path).read_bytes()).decode("ascii")
-        hasil[f"narator|{teks}"] = "data:audio/mpeg;base64," + data
+        jenis = "audio/mpeg" if path.endswith(".mp3") else "audio/wav"
+        hasil[f"narator|{teks}"] = f"data:{jenis};base64," + base64.b64encode(Path(path).read_bytes()).decode("ascii")
     return hasil
 
 
 def file_tersedia():
     daftar = baca_daftar()
     ada = []
-    for teks in NARASI:
+    for teks, _gaya in NARASI:
         isi = daftar.get(teks)
-        if isi and (FOLDER_SUARA / isi["file"]).exists():
+        if isi and isi.get("penyedia") != "microsoft" and (FOLDER_SUARA / isi["file"]).exists():
             p = FOLDER_SUARA / isi["file"]
             ada.append((teks, str(p), p.stat().st_mtime))
     return ada
 
 
-yang_kurang = [t for t in NARASI if perlu_dibuat(t, baca_daftar())]
+yang_kurang = [(t, g) for t, g in NARASI if perlu_dibuat(t, g, baca_daftar())]
 
 # ---------------------------------------------------------------------------
 #  PILIHAN UKURAN
@@ -245,18 +316,24 @@ with kiri:
     ukuran = st.radio("Ukuran video", ["YouTube (16:9)", "TikTok (9:16)"], horizontal=True)
 with kanan:
     pakai_narator = st.toggle("Suara narator", value=True,
-                              help="ElevenLabs" if PENYEDIA == "elevenlabs" else "Suara Microsoft (isi ELEVENLABS_API_KEY untuk suara yang lebih natural)")
+                              help={"elevenlabs": "Suara ElevenLabs", "gemini": "Suara Google Gemini (gratis)"}.get(PENYEDIA, "Isi GEMINI_API_KEY untuk mengaktifkan suara"))
 
-if pakai_narator and yang_kurang and not st.session_state.get("narator_gagal"):
-    # Otomatis, tanpa tombol. Hanya terjadi saat pertama kali dibuka (butuh internet, beberapa detik).
+if pakai_narator and not PENYEDIA and yang_kurang:
+    st.info("Suara narator belum aktif. Ambil API key **gratis** di aistudio.google.com (menu *Get API key*), "
+            "lalu isi `GEMINI_API_KEY` di `.streamlit/secrets.toml` atau di menu **Secrets** Streamlit Cloud. "
+            "Video tetap bisa diputar dengan subtitle.")
+elif pakai_narator and yang_kurang and not st.session_state.get("narator_gagal"):
+    # Otomatis, tanpa tombol. Hanya terjadi saat pertama kali (atau sampai semua kalimat selesai).
     try:
         rekam_narasi(yang_kurang)
+    except KuotaHabis as e:
+        st.session_state["narator_gagal"] = f"Kuota gratis hari ini sudah habis ({e}). Sisanya dibuat otomatis saat dibuka lagi besok."
     except Exception as e:
         st.session_state["narator_gagal"] = str(e)
-    yang_kurang = [t for t in NARASI if perlu_dibuat(t, baca_daftar())]
+    yang_kurang = [(t, g) for t, g in NARASI if perlu_dibuat(t, g, baca_daftar())]
 if pakai_narator and st.session_state.get("narator_gagal"):
-    st.warning("Suara narator belum bisa disiapkan. Video tetap bisa diputar dengan subtitle.\n\n"
-               f"Penyebab: {st.session_state['narator_gagal']}")
+    st.warning("Sebagian suara narator belum bisa dibuat. Video tetap bisa diputar; bagian yang belum bersuara tetap ada subtitlenya.\n\n"
+               f"Keterangan: {st.session_state['narator_gagal']}")
     if st.button("Coba lagi"):
         st.session_state.pop("narator_gagal", None)
         st.rerun()
@@ -446,30 +523,60 @@ const sfx = {
   prang() { if (!siap()) return; const t = Suara.ctx.currentTime; bising(t, 0.35, 0.3, 'highpass', 2500, 0.5); nada(88, t, 0.4, 0.06, 'triangle', Suara.master); nada(95, t + 0.03, 0.3, 0.05, 'triangle', Suara.master); },
   tek() { if (!siap()) return; const t = Suara.ctx.currentTime; bising(t, 0.12, 0.5, 'bandpass', 1800, 2); nada(40, t, 0.6, 0.35, 'sine', Suara.master); },
   ding(n = 84) { if (!siap()) return; const t = Suara.ctx.currentTime; nada(n, t, 1, 0.1, 'sine', Suara.master); nada(n + 7, t + 0.07, 1, 0.07, 'sine', Suara.master); },
+  riser(d = 2) { if (!siap()) return; const a = Suara.ctx, t = a.currentTime; const f = bising(t, d, 0.18, 'highpass', 400, 0.8); f.frequency.exponentialRampToValueAtTime(6000, t + d); const o = a.createOscillator(), g = a.createGain(); o.type = 'sawtooth'; o.frequency.setValueAtTime(180, t); o.frequency.exponentialRampToValueAtTime(900, t + d); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.05, t + d * 0.95); g.gain.exponentialRampToValueAtTime(0.0001, t + d + 0.05); o.connect(g).connect(Suara.master); o.start(t); o.stop(t + d + 0.1); },
+  hantam() { if (!siap()) return; const t = Suara.ctx.currentTime; perkusi(t, 'kick', 0.9); perkusi(t, 'crash', 0.25); nada(36, t, 1.6, 0.25, 'sine', Suara.master); },
   ombak() { if (!siap()) return; const f = bising(Suara.ctx.currentTime, 4, 0.22, 'lowpass', 500, 0.6); f.frequency.linearRampToValueAtTime(1600, Suara.ctx.currentTime + 3.5); },
 };
+// ---------- musik berlapis: makin tinggi "energi" adegan, makin banyak instrumen yang masuk
 const MUSIK = {
-  penasaran: { bpm: 104, akor: [[60, 64, 67], [57, 60, 64], [53, 57, 60], [55, 59, 62]], vol: 0.045 },
-  tegang:    { bpm: 84,  akor: [[50, 53, 57], [46, 50, 53], [48, 52, 55], [45, 49, 52]], vol: 0.045 },
-  ceria:     { bpm: 116, akor: [[53, 57, 60], [60, 64, 67], [55, 59, 62], [60, 64, 67]], vol: 0.045 },
+  penasaran: { akor: [[60, 64, 67], [57, 60, 64], [53, 57, 60], [55, 59, 62]], motif: [0, 1, 2, 1, 3, 2, 1, 0] },
+  tegang:    { akor: [[50, 53, 57], [46, 50, 53], [48, 52, 55], [45, 49, 52]], motif: [0, 0, 2, 1, 0, 2, 3, 2] },
+  ceria:     { akor: [[53, 57, 60], [60, 64, 67], [55, 59, 62], [60, 64, 67]], motif: [2, 1, 0, 1, 2, 3, 2, 1] },
 };
-const Pemutar = { mood: null, ingin: null, langkah: 0, berikut: 0 };
-const POLA = [0, 2, 1, 3, 2, 1, 3, 2];
+const BPM = 100, L16 = 60 / BPM / 4;
+const Pemutar = { mood: null, ingin: null, langkah: 0, berikut: 0, energi: 0, target: 0 };
+function perkusi(t, jenis, vol) {
+  const a = Suara.ctx;
+  if (jenis === 'kick') {
+    const o = a.createOscillator(), g = a.createGain();
+    o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.16);
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
+    o.connect(g).connect(Suara.musik); o.start(t); o.stop(t + 0.35); return;
+  }
+  const n = a.createBufferSource(); n.buffer = Suara.bising;
+  const f = a.createBiquadFilter(), g = a.createGain();
+  const d = jenis === 'hat' ? 0.045 : jenis === 'crash' ? 1.4 : 0.16;
+  f.type = jenis === 'snare' ? 'bandpass' : 'highpass'; f.frequency.value = jenis === 'snare' ? 1900 : jenis === 'crash' ? 5000 : 7500;
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + d);
+  n.connect(f).connect(g).connect(Suara.musik); n.start(t, Math.random()); n.stop(t + d + 0.02);
+  if (jenis === 'snare') nada(55, t, 0.1, vol * 0.5, 'triangle');
+}
 function detakMusik() {
   if (!siap()) return;
   const a = Suara.ctx;
   if (Pemutar.berikut < a.currentTime) Pemutar.berikut = a.currentTime + 0.05;
-  while (Pemutar.berikut < a.currentTime + 0.25) {
-    if (Pemutar.langkah % 8 === 0) Pemutar.mood = Pemutar.ingin;
-    const m = MUSIK[Pemutar.mood], dl = m ? 30 / m.bpm : 0.25;
-    if (m) {
-      const t = Pemutar.berikut, ak = m.akor[Math.floor(Pemutar.langkah / 8) % 4], l = Pemutar.langkah % 8;
-      if (l === 0 || l === 4) nada(ak[0] - 24, t, dl * 3.5, m.vol * 1.2, 'sine');
-      const i = POLA[l], n = i === 3 ? ak[0] + 12 : ak[i];
-      nada(n + 12, t, dl * 1.4, m.vol, 'triangle');
-      if (l % 2 === 1 && Math.random() < 0.35) nada(n + 24, t, 0.25, m.vol * 0.35, 'sine');
+  while (Pemutar.berikut < a.currentTime + 0.2) {
+    const t = Pemutar.berikut, l = Pemutar.langkah % 16, bar = Math.floor(Pemutar.langkah / 16);
+    if (l === 0) Pemutar.mood = Pemutar.ingin;
+    const m = MUSIK[Pemutar.mood], E = Pemutar.energi;
+    if (m && E > 0.02) {
+      const ak = m.akor[bar % 4], v = 0.03 + 0.03 * E;
+      // pad (selalu ada, makin tebal saat energi naik)
+      if (l === 0) for (const n of ak) nada(n, t, L16 * 16, v * (0.5 + 0.5 * E), 'triangle', Suara.musik, 0.5);
+      // bass
+      if (E > 0.15 && (l === 0 || l === 8 || (E > 0.55 && (l === 6 || l === 14)))) nada(ak[0] - 24, t, L16 * 5, v * 1.8, 'sine');
+      // arpeggio: 8-an, jadi 16-an saat energi tinggi
+      if (E > 0.3 && (l % 2 === 0 || E > 0.78)) { const i = [0, 1, 2, 1][(l >> (E > 0.78 ? 0 : 1)) % 4]; nada(ak[i] + 12, t, L16 * 2.2, v * 0.8, 'triangle'); }
+      // melodi pendek
+      if (E > 0.45 && l % 4 === 0) { const i = m.motif[(bar % 2) * 4 + l / 4]; const n = i === 3 ? ak[0] + 12 : ak[i]; nada(n + 24, t, L16 * 3.5, v * 0.9, 'sine'); }
+      // drum
+      if (E > 0.35 && (l % 2 === 0 || E > 0.82)) perkusi(t, 'hat', 0.03 + 0.03 * E);
+      if (E > 0.5 && (l === 0 || l === 8 || (E > 0.72 && (l === 4 || l === 12)))) perkusi(t, 'kick', 0.35 + 0.25 * E);
+      if (E > 0.65 && (l === 4 || l === 12)) perkusi(t, 'snare', 0.12 + 0.1 * E);
+      if (E > 0.7 && bar % 4 === 3 && l >= 12) perkusi(t, 'snare', 0.06 + 0.1 * (l - 11) / 4);   // isian drum di ujung frasa
+      if (E > 0.75 && bar % 4 === 0 && l === 0) perkusi(t, 'crash', 0.08);
     }
-    Pemutar.berikut += dl; Pemutar.langkah++;
+    Pemutar.berikut += L16; Pemutar.langkah++;
   }
 }
 // narator: rekaman jadi yang diisi oleh app.py (Streamlit)
@@ -660,9 +767,9 @@ let goncang = 0; // guncangan layar (0..1) yang diatur tiap adegan
 const ADEGAN = [
   // ---------------------------------------------------------------- 0. PEMBUKA
   {
-    nama: 'Pembuka', dur: 9.5, musik: lt => lt < 5 ? null : 'penasaran',
+    nama: 'Pembuka', dur: 9.5, musik: lt => lt < 4.9 ? null : 'penasaran', energi: lt => kf(lt, [[0, 0], [4.9, 0], [5, 0.8], [9.5, 0.5]]),
     teks: [[0.5, 3.9, 'Pernah nggak, lagi santai tiba-tiba lantai bergoyang?'], [5.2, 9.3, 'Itu namanya gempa bumi. Tapi… sebenarnya kenapa bisa terjadi?']],
-    acara: [[0.9, () => sfx.gemuruh(3.4, 0.45)], [2.6, sfx.prang], [5.0, sfx.wus]],
+    acara: [[0.9, () => sfx.gemuruh(3.4, 0.45)], [2.6, sfx.prang], [5.0, () => { sfx.wus(); sfx.hantam(); }]],
     gambar(lt) {
       goncang = lt > 0.9 && lt < 4.3 ? kf(lt, [[0.9, 0.2], [1.6, 1], [3.6, 1], [4.3, 0]]) : 0;
       // kamar
@@ -716,7 +823,7 @@ const ADEGAN = [
   },
   // ---------------------------------------------------------------- 1. ISI BUMI
   {
-    nama: 'Isi Bumi', dur: 15, musik: () => 'penasaran',
+    nama: 'Isi Bumi', dur: 15, musik: () => 'penasaran', energi: lt => kf(lt, [[0, 0.35], [15, 0.45]]),
     teks: [[0.4, 3.2, 'Untuk tahu jawabannya, kita intip dulu isi Bumi.'], [3.4, 7.0, 'Paling luar ada kerak, lapisan tipis tempat kita berpijak.'], [7.2, 12.0, 'Di bawahnya ada mantel yang panas, lalu inti Bumi yang super panas.'], [12.2, 14.8, 'Nah, yang penting buat gempa adalah kerak ini.']],
     acara: [[0.3, sfx.wus], [2.2, sfx.wus], [3.6, sfx.pop], [7.4, sfx.pop], [9.4, sfx.pop], [10.6, sfx.pop], [12.3, () => sfx.ding(88)]],
     gambar(lt) {
@@ -745,7 +852,7 @@ const ADEGAN = [
   },
   // ---------------------------------------------------------------- 2. LEMPENG
   {
-    nama: 'Lempeng', dur: 14.5, musik: () => 'penasaran',
+    nama: 'Lempeng', dur: 14.5, musik: () => 'penasaran', energi: lt => kf(lt, [[0, 0.45], [6, 0.55], [14.5, 0.6]]),
     teks: [[0.4, 5.6, 'Kerak Bumi ternyata tidak utuh. Ia terpecah jadi potongan raksasa bernama lempeng tektonik.'], [5.9, 10.0, 'Lempeng-lempeng ini terus bergerak, beberapa sentimeter setiap tahun.'], [10.3, 14.2, 'Kurang lebih secepat kuku kita tumbuh!']],
     acara: [[1.5, sfx.tek], [2.2, sfx.pop], [6.2, sfx.wus], [10.4, sfx.pop]],
     gambar(lt) {
@@ -787,7 +894,7 @@ const ADEGAN = [
   },
   // ---------------------------------------------------------------- 3. INDONESIA
   {
-    nama: 'Indonesia', dur: 14, musik: () => 'penasaran',
+    nama: 'Indonesia', dur: 14, musik: () => 'penasaran', energi: lt => kf(lt, [[0, 0.5], [9.6, 0.62], [10, 0.85], [14, 0.6]]),
     teks: [[0.4, 4.6, 'Indonesia letaknya istimewa: di pertemuan tiga lempeng besar.'], [4.9, 9.6, 'Lempeng Eurasia, Indo-Australia, dan Pasifik saling dorong di bawah negeri kita.'], [9.9, 13.8, 'Makanya Indonesia termasuk negara yang paling sering gempa.']],
     acara: [[5.2, sfx.pop], [6.6, sfx.pop], [8.0, sfx.pop], [10, () => sfx.gemuruh(1.2, 0.25)]],
     gambar(lt) {
@@ -829,9 +936,9 @@ const ADEGAN = [
   },
   // ---------------------------------------------------------------- 4. KENAPA GEMPA
   {
-    nama: 'Kenapa Gempa', dur: 18, musik: lt => lt < 9.4 ? 'tegang' : lt < 12 ? null : 'tegang',
+    nama: 'Kenapa Gempa', dur: 18, musik: () => 'tegang', energi: lt => kf(lt, [[0, 0.3], [7, 0.7], [9.35, 0.95], [9.4, 0], [10.5, 0], [10.6, 1], [13, 0.9], [18, 0.45]]),
     teks: [[0.4, 3.9, 'Di batas lempeng, dua lempeng bisa saling mengunci.'], [4.2, 9.2, 'Tekanannya terus menumpuk, seperti penggaris yang kita bengkokkan pelan-pelan…'], [9.4, 12.3, '…sampai akhirnya tidak kuat dan lepas tiba-tiba!'], [12.6, 17.6, 'Energi yang lepas itu menyebar sebagai getaran. Itulah gempa bumi.']],
-    acara: [[1.2, sfx.pop], [2.2, sfx.pop], [2.9, sfx.pop], [4.3, sfx.wus], [9.4, () => { sfx.tek(); sfx.gemuruh(3, 0.5); }], [12.8, sfx.pop]],
+    acara: [[1.2, sfx.pop], [2.2, sfx.pop], [2.9, sfx.pop], [4.3, sfx.wus], [7.4, () => sfx.riser(2)], [9.4, () => { sfx.tek(); sfx.hantam(); sfx.gemuruh(3, 0.5); }], [12.8, sfx.pop]],
     gambar(lt) {
       let b = kf(lt, [[1, 0], [9.4, 1]], halus);
       if (lt > 9.4) { const u = lt - 9.4; b = -0.55 * Math.exp(-u * 1.8) * Math.cos(u * 9); }
@@ -896,7 +1003,7 @@ const ADEGAN = [
   },
   // ---------------------------------------------------------------- 5. TITIK GEMPA
   {
-    nama: 'Titik Gempa', dur: 11, musik: () => 'penasaran',
+    nama: 'Titik Gempa', dur: 11, musik: () => 'penasaran', energi: () => 0.38,
     teks: [[0.4, 4.6, 'Titik asal gempa di dalam Bumi disebut hiposentrum.'], [5.0, 10.6, 'Sedangkan titik di permukaan tepat di atasnya disebut episentrum.']],
     acara: [[1.2, sfx.pop], [5.6, sfx.pop], [6.0, sfx.pop]],
     gambar(lt) {
@@ -922,9 +1029,9 @@ const ADEGAN = [
   },
   // ---------------------------------------------------------------- 6. GELOMBANG
   {
-    nama: 'Gelombang', dur: 14, musik: () => 'penasaran',
+    nama: 'Gelombang', dur: 14, musik: () => 'penasaran', energi: lt => kf(lt, [[0, 0.4], [4.4, 0.55], [8.3, 0.6], [8.4, 0.92], [14, 0.6]]),
     teks: [[0.4, 4.0, 'Getaran gempa merambat sebagai gelombang seismik.'], [4.4, 8.2, 'Gelombang P datang duluan: lebih cepat, tapi lebih lemah.'], [8.4, 13.8, 'Lalu gelombang S menyusul: lebih lambat, tapi guncangannya lebih kuat.']],
-    acara: [[4.4, sfx.pop], [8.4, () => { sfx.pop(); sfx.gemuruh(2, 0.3); }], [1, sfx.pop]],
+    acara: [[4.4, sfx.pop], [8.4, () => { sfx.pop(); sfx.hantam(); sfx.gemuruh(2, 0.3); }], [1, sfx.pop]],
     gambar(lt) {
       latarTerang();
       ctx.fillStyle = '#7cc576'; ctx.fillRect(-20, 260, SW + 40, 18); ctx.fillStyle = '#a07855'; ctx.fillRect(-20, 276, SW + 40, 500);
@@ -967,7 +1074,7 @@ const ADEGAN = [
   },
   // ---------------------------------------------------------------- 7. MAGNITUDO
   {
-    nama: 'Magnitudo', dur: 11, musik: () => 'penasaran',
+    nama: 'Magnitudo', dur: 11, musik: () => 'penasaran', energi: lt => kf(lt, [[0, 0.55], [5.6, 0.8], [11, 0.6]]),
     teks: [[0.4, 3.6, 'Kekuatan gempa diukur dengan magnitudo.'], [4.0, 10.6, 'Naik satu angka saja, energinya kira-kira tiga puluh dua kali lipat!']],
     acara: [[1, sfx.pop], [3.2, sfx.pop], [5.6, sfx.pop], [4.2, sfx.wus], [6.4, sfx.wus]],
     gambar(lt) {
@@ -992,9 +1099,9 @@ const ADEGAN = [
   },
   // ---------------------------------------------------------------- 8. TSUNAMI
   {
-    nama: 'Tsunami', dur: 10, musik: () => 'tegang',
+    nama: 'Tsunami', dur: 10, musik: () => 'tegang', energi: lt => kf(lt, [[0, 0.6], [1, 0.75], [5.3, 0.85], [5.4, 1], [10, 0.7]]),
     teks: [[0.4, 4.6, 'Kalau gempanya kuat dan terjadi di bawah laut, dasar laut bisa terangkat…'], [5.0, 9.6, '…dan mendorong air laut menjadi gelombang tsunami.']],
-    acara: [[1, () => { sfx.tek(); sfx.gemuruh(1.5, 0.35); }], [2.4, sfx.ombak], [5.4, sfx.pop], [1.4, sfx.pop]],
+    acara: [[1, () => { sfx.tek(); sfx.gemuruh(1.5, 0.35); }], [2.4, sfx.ombak], [5.4, sfx.pop], [1.4, sfx.pop], [3.0, () => sfx.riser(2.4)], [5.4, sfx.hantam]],
     gambar(lt) {
       goncang = lt > 1 && lt < 2 ? 0.5 : 0;
       latarTerang('#e0f4ff', '#bfe6f2');
@@ -1025,7 +1132,7 @@ const ADEGAN = [
   },
   // ---------------------------------------------------------------- 9. SAAT GEMPA
   {
-    nama: 'Saat Gempa', dur: 16.5, musik: () => 'ceria',
+    nama: 'Saat Gempa', dur: 16.5, musik: () => 'ceria', energi: lt => kf(lt, [[0, 0.4], [11.2, 0.55], [11.9, 0.85], [16.5, 0.8]]),
     teks: [[0.4, 3.2, 'Terus, kalau gempa datang, kita harus apa?'], [3.4, 8.2, 'Merunduk, berlindung di bawah meja yang kuat, dan berpegangan.'], [8.4, 11.2, 'Jauhi kaca dan lemari yang bisa roboh.'], [11.5, 16.2, 'Kalau kamu di pantai dan gempanya kuat, segera lari ke tempat tinggi!']],
     acara: [[3.6, sfx.pop], [5.0, sfx.pop], [6.6, sfx.pop], [8.6, sfx.pop], [11.4, sfx.wus]],
     gambar(lt) {
@@ -1075,7 +1182,7 @@ const ADEGAN = [
   },
   // ---------------------------------------------------------------- 10. PENUTUP
   {
-    nama: 'Penutup', dur: 10, musik: () => 'ceria',
+    nama: 'Penutup', dur: 10, musik: () => 'ceria', energi: lt => kf(lt, [[0, 0.8], [6.3, 1], [8.5, 0.6], [10, 0.2]]),
     teks: [[0.4, 6.0, 'Jadi, gempa bumi terjadi karena lempeng Bumi bergerak dan melepas energi secara tiba-tiba.'], [6.3, 9.8, 'Tetap tenang, dan selalu siaga ya!']],
     acara: [[0.8, sfx.pop], [2.3, sfx.pop], [3.8, sfx.pop], [6.4, () => sfx.ding(84)]],
     gambar(lt) {
@@ -1144,6 +1251,8 @@ function bingkai(now) {
   }
   ltSebelum = lt;
   Pemutar.ingin = a.musik ? a.musik(lt) : null;
+  Pemutar.target = a.energi ? a.energi(lt) : 0.4;
+  Pemutar.energi += (Pemutar.target - Pemutar.energi) * Math.min(1, dt * (Pemutar.target < Pemutar.energi - 0.3 ? 20 : 3));
   if (main) detakMusik();
   if (Suara.musik) Suara.musik.gain.setTargetAtTime(Dub.aktif.size ? 0.35 : 1, Suara.ctx.currentTime, 0.12);
   dasar(); ctx.fillStyle = '#0b1426'; ctx.fillRect(0, 0, VW, VH);
