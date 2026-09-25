@@ -587,6 +587,7 @@ function teksKinetik(lt, t0, s, x, y, ukuran, o = {}) {
   if (lebar > maksL) { const f = maksL / lebar; ukuran *= f; ctx.font = `${berat} ${ukuran}px ${font}`; lebarHuruf = [...s].map(ch => ctx.measureText(ch).width + spasi * f); lebar = maksL; }
   let px = x - lebar / 2;
   const hilang = o.sampai ? klem((o.sampai - lt) / 0.4) : 1;
+  const uK = o.kilap ? (lt - t0 - s.length * jeda - 0.25) / 0.9 : -1, sxg = lerp(x - lebar / 2 - 90, x + lebar / 2 + 90, halus(klem(uK)));
   for (let i = 0; i < s.length; i++) {
     const ch = s[i], w = lebarHuruf[i];
     const u = klem((lt - t0 - i * jeda) / (o.durasi || 0.35));
@@ -598,6 +599,11 @@ function teksKinetik(lt, t0, s, x, y, ukuran, o = {}) {
       if (o.gradasi) { const g = ctx.createLinearGradient(0, -ukuran / 2, 0, ukuran / 2); o.gradasi.forEach((c, j) => g.addColorStop(j / (o.gradasi.length - 1), c)); ctx.fillStyle = g; }
       else ctx.fillStyle = o.warna || '#fff';
       ctx.textAlign = 'center'; ctx.fillText(ch, -spasi / 2, 0);
+      if (uK > 0 && uK < 1 && u >= 1) {
+        tanpaSinar(); const off = sxg - (px + w / 2);
+        const gk = ctx.createLinearGradient(off - 70, 0, off + 70, 0); gk.addColorStop(0, 'rgba(255,255,255,0)'); gk.addColorStop(0.5, 'rgba(255,250,235,.95)'); gk.addColorStop(1, 'rgba(255,255,255,0)');
+        ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = gk; ctx.fillText(ch, -spasi / 2, 0); ctx.globalCompositeOperation = 'source-over';
+      }
       if (o.garis) { tanpaSinar(); ctx.lineWidth = o.garis; ctx.strokeStyle = o.warnaGaris || 'rgba(0,0,0,.4)'; ctx.strokeText(ch, 0, 0); }
       ctx.restore();
     }
@@ -657,6 +663,33 @@ function gelombangKejut(x, y, u, rMaks, warna = '255,255,255', sy = 1) {
   }
 }
 
+// ---------- debu melayang di latar
+function debuMelayang(n = 40, warna = '255,220,180', seed = 1, kec = 1) {
+  const r = rng(seed); ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < n; i++) {
+    const a = r(), b = r(), c = r(), d = r();
+    const x = ((a * (SW + 200) + waktu * 14 * kec * (0.3 + b)) % (SW + 200)) - 100 + Math.sin(waktu * 0.7 + i) * 12;
+    const y = (((c * (SH + 200) - waktu * 9 * kec * (0.2 + d)) % (SH + 200)) + SH + 200) % (SH + 200) - 100;
+    const al = (0.25 + 0.5 * (0.5 + 0.5 * Math.sin(waktu * (1 + d) + i))) * (0.4 + b * 0.6);
+    ctx.fillStyle = `rgba(${warna},${al})`; bulat(x, y, 0.8 + b * 2.2); ctx.fill();
+  }
+  ctx.restore();
+}
+// ---------- kartu judul bab (gaya dokumenter)
+function kartuBab(no, judul, r) {
+  if (r > 3.1 || r < 0.15) return;
+  const masuk = keluar3(klem((r - 0.2) / 0.5)), keluar = klem((3.1 - r) / 0.4);
+  ctx.save(); ctx.globalAlpha = keluar;
+  const x = 64, y = 128;
+  ctx.font = `400 128px ${FONT_JUDUL}`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  const angka = String(no).padStart(2, '0'), jx = x + ctx.measureText(angka).width + 22;
+  ctx.lineWidth = 2; ctx.strokeStyle = `rgba(255,255,255,${0.55 * masuk})`; ctx.strokeText(angka, x, y + (1 - masuk) * 30);
+  ctx.fillStyle = '#ff7a2f'; sinar('#ff7a2f', 14); ctx.fillRect(jx, y - 34, 360 * masuk, 5); tanpaSinar();
+  teks('BAB ' + no, jx + 2, y - 12, 18, `rgba(255,210,170,${masuk})`, FONT_HUD, 400, 'left');
+  ctx.save(); ctx.beginPath(); ctx.rect(jx - 2, y + 2, 560 * masuk, 64); ctx.clip();
+  sinar('rgba(0,0,0,.6)', 12); teks(judul.toUpperCase(), jx, y + 32, 54, '#ffffff', FONT_JUDUL, 400, 'left'); tanpaSinar(); ctx.restore();
+  ctx.restore();
+}
 // ---------- partikel
 let P = [];
 function tebar(n, f) { for (let i = 0; i < n; i++) P.push(f(i)); }
@@ -697,12 +730,13 @@ function siapkanAudio() {
     Suara.ctx = a;
     const kompres = a.createDynamicsCompressor(); kompres.threshold.value = -14; kompres.ratio.value = 4; kompres.connect(a.destination);
     Suara.master = a.createGain(); Suara.master.gain.value = Suara.nyala ? 0.85 : 0; Suara.master.connect(kompres);
-    // gema (reverb) buatan
     const pj = a.sampleRate * 2.8, ir = a.createBuffer(2, pj, a.sampleRate);
     for (let c = 0; c < 2; c++) { const d = ir.getChannelData(c); for (let i = 0; i < pj; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / pj, 3.2); }
     Suara.gema = a.createConvolver(); Suara.gema.buffer = ir;
-    const gemaG = a.createGain(); gemaG.gain.value = 0.32; Suara.gema.connect(gemaG).connect(Suara.master);
+    const gemaG = a.createGain(); gemaG.gain.value = 0.3; Suara.gema.connect(gemaG).connect(Suara.master);
     Suara.musik = a.createGain(); Suara.musik.gain.value = 1; Suara.musik.connect(Suara.master); Suara.musik.connect(Suara.gema);
+    Suara.efek = a.createGain(); Suara.efek.gain.value = 1; Suara.efek.connect(Suara.master);
+    const efekGema = a.createGain(); efekGema.gain.value = 0.35; Suara.efek.connect(efekGema).connect(Suara.gema);
     const buf2 = a.createBuffer(1, a.sampleRate * 2, a.sampleRate), d = buf2.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
     Suara.bising = buf2;
@@ -710,77 +744,119 @@ function siapkanAudio() {
 }
 const siap = () => Suara.ctx && Suara.ctx.state === 'running';
 const hz = m => 440 * Math.pow(2, (m - 69) / 12);
-function nada(midi, t, durasi, vol, jenis = 'sine', tujuan = Suara.musik, serang = 0.008) {
-  const a = Suara.ctx, o = a.createOscillator(), g = a.createGain();
-  o.type = jenis; o.frequency.value = hz(midi);
-  g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(vol, t + serang); g.gain.exponentialRampToValueAtTime(0.0001, t + durasi);
-  o.connect(g).connect(tujuan); o.start(t); o.stop(t + durasi + 0.05);
+// tujuan dengan posisi kiri-kanan acak supaya tiap efek terdengar sedikit beda
+function arah(pan = acak(-0.5, 0.5), tujuan = Suara.efek) {
+  const a = Suara.ctx; if (!a.createStereoPanner) return tujuan;
+  const p = a.createStereoPanner(); p.pan.value = klem(pan, -1, 1); p.connect(tujuan); return p;
 }
-function bising(t, durasi, vol, jenisFilter, frek, q = 1, tujuan = Suara.master, serang = 0.01) {
+function osc(jenis, f, t, durasi, vol, tujuan, o = {}) {
+  const a = Suara.ctx, n = a.createOscillator(), g = a.createGain();
+  n.type = jenis; n.frequency.setValueAtTime(f, t); if (o.ke) n.frequency.exponentialRampToValueAtTime(Math.max(1, o.ke), t + (o.geser || durasi));
+  if (o.detune) n.detune.value = o.detune;
+  const serang = o.serang ?? 0.005;
+  g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(vol, t + serang); g.gain.exponentialRampToValueAtTime(0.0001, t + durasi);
+  let akhir = g;
+  if (o.lp) { const f2 = a.createBiquadFilter(); f2.type = 'lowpass'; f2.frequency.value = o.lp; f2.Q.value = o.q || 0.7; g.connect(f2); akhir = f2; }
+  n.connect(g); akhir.connect(tujuan); n.start(t); n.stop(t + durasi + 0.05);
+  return n;
+}
+function nada(midi, t, durasi, vol, jenis = 'sine', tujuan = Suara.musik, serang = 0.008) { return osc(jenis, hz(midi), t, durasi, vol, tujuan, { serang }); }
+function bising(t, durasi, vol, jenisFilter, frek, q = 1, tujuan = Suara.efek, serang = 0.01) {
   const a = Suara.ctx, n = a.createBufferSource(); n.buffer = Suara.bising; n.loop = true;
   const f = a.createBiquadFilter(); f.type = jenisFilter; f.frequency.value = frek; f.Q.value = q;
   const g = a.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + serang); g.gain.exponentialRampToValueAtTime(0.0001, t + durasi);
-  n.connect(f).connect(g).connect(tujuan); n.start(t, Math.random()); n.stop(t + durasi + 0.05);
+  n.connect(f).connect(g).connect(tujuan); n.start(t, Math.random() * 1.5); n.stop(t + durasi + 0.05);
   return f;
 }
-// instrumen sinematik
-const ALAT = {
-  braam(t, midi = 38, vol = 0.22) {           // hantaman "BRAAAM" ala trailer
-    const a = Suara.ctx, lp = a.createBiquadFilter(), g = a.createGain();
-    lp.type = 'lowpass'; lp.Q.value = 6; lp.frequency.setValueAtTime(180, t); lp.frequency.exponentialRampToValueAtTime(1900, t + 0.18); lp.frequency.exponentialRampToValueAtTime(260, t + 2.6);
-    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + 0.06); g.gain.exponentialRampToValueAtTime(0.0001, t + 3.2);
-    lp.connect(g).connect(Suara.musik);
-    for (const [m, det, jenis] of [[midi, -9, 'sawtooth'], [midi, 8, 'sawtooth'], [midi + 12, 4, 'square'], [midi - 12, 0, 'sawtooth'], [midi + 7, -5, 'sawtooth']]) {
-      const o = a.createOscillator(); o.type = jenis; o.frequency.value = hz(m); o.detune.value = det; o.connect(lp); o.start(t); o.stop(t + 3.3);
-    }
-  },
-  taiko(t, vol = 0.6) {
-    const a = Suara.ctx, o = a.createOscillator(), g = a.createGain();
-    o.frequency.setValueAtTime(95, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.35);
-    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.7);
-    o.connect(g).connect(Suara.musik); o.start(t); o.stop(t + 0.75);
-    bising(t, 0.25, vol * 0.35, 'lowpass', 500, 1, Suara.musik, 0.002);
-  },
-  kick(t, vol = 0.5) { const a = Suara.ctx, o = a.createOscillator(), g = a.createGain(); o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(42, t + 0.16); g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.32); o.connect(g).connect(Suara.musik); o.start(t); o.stop(t + 0.35); },
-  snare(t, vol = 0.18) { bising(t, 0.16, vol, 'bandpass', 1900, 0.8, Suara.musik, 0.002); nada(55, t, 0.1, vol * 0.5, 'triangle'); },
-  hat(t, vol = 0.04) { bising(t, 0.045, vol, 'highpass', 7500, 0.7, Suara.musik, 0.001); },
-  detak(t, vol = 0.12) { nada(96, t, 0.03, vol, 'square', Suara.master, 0.001); },
-  jantung(t, vol = 0.7) { for (const [dt, v] of [[0, 1], [0.2, 0.7]]) { const a = Suara.ctx, o = a.createOscillator(), g = a.createGain(); o.frequency.setValueAtTime(70, t + dt); o.frequency.exponentialRampToValueAtTime(38, t + dt + 0.12); g.gain.setValueAtTime(vol * v, t + dt); g.gain.exponentialRampToValueAtTime(0.001, t + dt + 0.22); o.connect(g).connect(Suara.master); o.start(t + dt); o.stop(t + dt + 0.25); } },
-  subdrop(t, vol = 0.6) { const a = Suara.ctx, o = a.createOscillator(), g = a.createGain(); o.frequency.setValueAtTime(110, t); o.frequency.exponentialRampToValueAtTime(26, t + 1.6); g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + 1.8); o.connect(g).connect(Suara.master); o.start(t); o.stop(t + 1.9); },
-  crash(t, vol = 0.22) { bising(t, 1.6, vol, 'highpass', 4500, 0.5, Suara.musik, 0.002); },
-  sirene(t, d = 3, vol = 0.07) {
-    const a = Suara.ctx, o = a.createOscillator(), lfo = a.createOscillator(), lg = a.createGain(), g = a.createGain();
-    o.type = 'triangle'; o.frequency.value = 700; lfo.frequency.value = 0.7; lg.gain.value = 180; lfo.connect(lg).connect(o.frequency);
-    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + 0.5); g.gain.setValueAtTime(vol, t + d - 0.6); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
-    o.connect(g).connect(Suara.musik); o.start(t); lfo.start(t); o.stop(t + d + 0.1); lfo.stop(t + d + 0.1);
-  },
-  bip(t, n = 86, vol = 0.08) { nada(n, t, 0.12, vol, 'sine', Suara.master, 0.002); },
+// ---------- instrumen musik (warna suara berbeda tiap suasana)
+const INSTR = {
+  pad(m, t, d, v) { for (const det of [-7, 6]) osc('triangle', hz(m), t, d, v * 0.6, Suara.musik, { serang: Math.min(1, d * 0.3), detune: det, lp: 1100 }); },
+  senarPad(m, t, d, v) { for (const det of [-9, 0, 8]) osc('sawtooth', hz(m), t, d, v * 0.28, Suara.musik, { serang: Math.min(1.2, d * 0.35), detune: det, lp: 900 }); },
+  bel(m, t, d, v) { osc('sine', hz(m), t, d * 2, v, Suara.musik, { serang: 0.002 }); osc('sine', hz(m) * 2.76, t, d * 0.6, v * 0.35, Suara.musik, { serang: 0.002 }); osc('sine', hz(m) * 5.4, t, d * 0.25, v * 0.15, Suara.musik, { serang: 0.002 }); },
+  marimba(m, t, d, v) { osc('sine', hz(m), t, 0.45, v, Suara.musik, { serang: 0.002 }); osc('sine', hz(m) * 4, t, 0.12, v * 0.35, Suara.musik, { serang: 0.001 }); },
+  piano(m, t, d, v) { osc('triangle', hz(m), t, Math.max(0.8, d), v, Suara.musik, { serang: 0.004, lp: 2800 }); osc('sine', hz(m) * 2, t, 0.6, v * 0.3, Suara.musik, { serang: 0.003 }); },
+  pizz(m, t, d, v) { osc('triangle', hz(m), t, 0.22, v, Suara.musik, { serang: 0.002, lp: 1600 }); },
+  senarPendek(m, t, d, v) { osc('sawtooth', hz(m), t, Math.min(0.2, d), v * 0.6, Suara.musik, { serang: 0.004, lp: 700, q: 2 }); },
+  bass(m, t, d, v) { osc('sine', hz(m), t, d, v, Suara.musik, { serang: 0.01 }); osc('triangle', hz(m), t, d * 0.6, v * 0.25, Suara.musik, { serang: 0.01, lp: 400 }); },
+  brass(m, t, d, v) { const a = Suara.ctx, lp = a.createBiquadFilter(), g = a.createGain(); lp.type = 'lowpass'; lp.frequency.setValueAtTime(350, t); lp.frequency.linearRampToValueAtTime(1500, t + 0.12); lp.frequency.exponentialRampToValueAtTime(600, t + d); g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(v * 0.5, t + 0.06); g.gain.exponentialRampToValueAtTime(0.0001, t + d); lp.connect(g).connect(Suara.musik); for (const det of [-6, 5]) { const o = a.createOscillator(); o.type = 'sawtooth'; o.frequency.value = hz(m); o.detune.value = det; o.connect(lp); o.start(t); o.stop(t + d + 0.05); } },
+  dengung(m, t, d, v) { const a = Suara.ctx, lp = a.createBiquadFilter(), lfo = a.createOscillator(), lg = a.createGain(); lp.type = 'lowpass'; lp.frequency.value = 260; lfo.frequency.value = acak(0.1, 0.25); lg.gain.value = 140; lfo.connect(lg).connect(lp.frequency); lp.connect(Suara.musik); lfo.start(t); lfo.stop(t + d + 0.1); for (const [jenis, det, vv] of [['sine', 0, 1], ['triangle', 7, 0.6], ['triangle', -12, 0.5]]) osc(jenis, hz(m), t, d, v * vv, lp, { serang: d * 0.3, detune: det }); },
 };
+const DRUM = {
+  kick(t, v = 0.5) { osc('sine', 140, t, 0.32, v, Suara.musik, { ke: 42, geser: 0.16, serang: 0.001 }); },
+  snare(t, v = 0.16) { bising(t, 0.16, v, 'bandpass', acak(1700, 2200), 0.8, Suara.musik, 0.002); osc('triangle', 190, t, 0.1, v * 0.5, Suara.musik, { serang: 0.001 }); },
+  hat(t, v = 0.04) { bising(t, acak(0.03, 0.06), v, 'highpass', acak(7000, 9000), 0.7, Suara.musik, 0.001); },
+  shaker(t, v = 0.03) { bising(t, 0.08, v, 'bandpass', 5500, 1.5, Suara.musik, 0.02); },
+  taiko(t, v = 0.5) { osc('sine', acak(88, 100), t, 0.7, v, Suara.musik, { ke: 42, geser: 0.35, serang: 0.001 }); bising(t, 0.2, v * 0.3, 'lowpass', 500, 1, Suara.musik, 0.002); },
+  crash(t, v = 0.18) { bising(t, 1.5, v, 'highpass', acak(4000, 5500), 0.5, Suara.musik, 0.002); },
+};
+// ---------- bank efek suara: tiap jenis punya beberapa varian, dipilih bergiliran + sedikit acak
+const giliran = {};
+const varian = (nama, n) => (giliran[nama] = ((giliran[nama] ?? -1) + 1) % n);
+const T0 = () => Suara.ctx.currentTime;
 const sfx = {
-  pop() { if (!siap()) return; const a = Suara.ctx, t = a.currentTime, o = a.createOscillator(), g = a.createGain(); o.frequency.setValueAtTime(380, t); o.frequency.exponentialRampToValueAtTime(1100, t + 0.07); g.gain.setValueAtTime(0.09, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.12); o.connect(g).connect(Suara.master); o.start(t); o.stop(t + 0.15); },
-  wus(d = 0.5) { if (!siap()) return; const t = Suara.ctx.currentTime; const f = bising(t, d, 0.16, 'bandpass', 500, 0.9, Suara.master, d * 0.5); f.frequency.exponentialRampToValueAtTime(4000, t + d); },
-  gemuruh(d = 3, vol = 0.5) { if (!siap()) return; const t = Suara.ctx.currentTime; bising(t, d, vol, 'lowpass', 120, 0.7, Suara.master, 0.3); nada(29, t, d, vol * 0.5, 'sawtooth', Suara.master, 0.3); },
-  tek() { if (!siap()) return; const t = Suara.ctx.currentTime; bising(t, 0.14, 0.6, 'bandpass', 1700, 2, Suara.master, 0.002); nada(40, t, 0.7, 0.4, 'sine', Suara.master); },
-  hantam(m = 38) { if (!siap()) return; const t = Suara.ctx.currentTime; ALAT.braam(t, m, 0.2); ALAT.taiko(t, 0.8); ALAT.subdrop(t, 0.45); ALAT.crash(t, 0.2); },
-  riser(d = 2) { if (!siap()) return; const a = Suara.ctx, t = a.currentTime; const f = bising(t, d, 0.2, 'highpass', 300, 0.8, Suara.master, d * 0.95); f.frequency.exponentialRampToValueAtTime(7000, t + d); const o = a.createOscillator(), g = a.createGain(); o.type = 'sawtooth'; o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(1000, t + d); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.05, t + d * 0.95); g.gain.exponentialRampToValueAtTime(0.0001, t + d + 0.05); o.connect(g).connect(Suara.master); o.start(t); o.stop(t + d + 0.1); },
-  ding(n = 84) { if (!siap()) return; const t = Suara.ctx.currentTime; nada(n, t, 1.4, 0.09, 'sine', Suara.musik); nada(n + 7, t + 0.07, 1.4, 0.06, 'sine', Suara.musik); },
-  petir() { if (!siap()) return; const t = Suara.ctx.currentTime; bising(t, 0.5, 0.4, 'highpass', 1200, 0.5, Suara.master, 0.002); bising(t + 0.1, 3, 0.35, 'lowpass', 180, 0.6, Suara.master, 0.2); },
-  ombak() { if (!siap()) return; const f = bising(Suara.ctx.currentTime, 5, 0.25, 'lowpass', 400, 0.6, Suara.master, 1.5); f.frequency.linearRampToValueAtTime(1800, Suara.ctx.currentTime + 4); },
-  pecah() { if (!siap()) return; const t = Suara.ctx.currentTime; for (let i = 0; i < 6; i++) { nada(90 + Math.random() * 10, t + i * 0.04, 0.3, 0.05, 'triangle', Suara.master); } bising(t, 0.4, 0.25, 'highpass', 3000, 0.5, Suara.master, 0.002); },
-  jantung() { if (siap()) ALAT.jantung(Suara.ctx.currentTime); },
-  detak() { if (siap()) ALAT.detak(Suara.ctx.currentTime); },
-  bip(n) { if (siap()) ALAT.bip(Suara.ctx.currentTime, n); },
-  sirene(d) { if (siap()) ALAT.sirene(Suara.ctx.currentTime, d); },
-  braam(m) { if (siap()) ALAT.braam(Suara.ctx.currentTime, m); },
+  // data/label muncul — blip digital yang nadanya naik tiap label
+  hudKetik(i = 0) { if (!siap()) return; const t = T0(), v = varian('hud', 3), f = [880, 990, 1175, 1320][i % 4] * acak(0.97, 1.03), p = arah();
+    if (v === 0) { osc('square', f, t, 0.05, 0.035, p, { lp: 3000 }); osc('square', f * 1.5, t + 0.06, 0.05, 0.03, p, { lp: 3000 }); }
+    else if (v === 1) { osc('sine', f, t, 0.15, 0.08, p, { ke: f * 1.8, geser: 0.08 }); }
+    else { for (let k = 0; k < 3; k++) osc('triangle', f * (1 + k * 0.25), t + k * 0.035, 0.04, 0.05, p); } },
+  kartu() { if (!siap()) return; const t = T0(), v = varian('kartu', 3), p = arah();
+    bising(t, 0.12, 0.12, 'bandpass', [2500, 1800, 3200][v], 1.2, p, 0.004); osc('sine', [520, 660, 440][v] * acak(0.95, 1.05), t + 0.03, 0.18, 0.08, p, { ke: [780, 990, 660][v], geser: 0.08 }); },
+  judul() { if (!siap()) return; const t = T0(), f = bising(t, 0.7, 0.14, 'bandpass', 400, 1, arah(-0.6), 0.5); f.frequency.exponentialRampToValueAtTime(3500, t + 0.6); osc('sine', 1568, t + 0.55, 1.2, 0.04, Suara.efek, { serang: 0.01 }); osc('sine', 2093, t + 0.6, 1.2, 0.03, Suara.efek, { serang: 0.01 }); },
+  wus(d = 0.5) { if (!siap()) return; const t = T0(), v = varian('wus', 3), a = Suara.ctx;
+    const p = a.createStereoPanner ? a.createStereoPanner() : null;
+    if (p) { p.pan.setValueAtTime(v === 1 ? 0.8 : -0.8, t); p.pan.linearRampToValueAtTime(v === 1 ? -0.8 : 0.8, t + d); p.connect(Suara.efek); }
+    const f = bising(t, d, 0.16, 'bandpass', [500, 2500, 300][v], 0.9, p || Suara.efek, d * 0.5); f.frequency.exponentialRampToValueAtTime([4000, 400, 2500][v], t + d); },
+  angkasa() { if (!siap()) return; const t = T0(); const f = bising(t, 2.2, 0.12, 'bandpass', 200, 0.6, arah(0), 1); f.frequency.exponentialRampToValueAtTime(1800, t + 2); for (const [m, dt] of [[84, 0.6], [91, 0.9], [88, 1.2], [96, 1.5]]) osc('sine', hz(m), t + dt, 1.8, 0.025, arah()); },
+  belah() { if (!siap()) return; const t = T0(); osc('sine', 60, t, 1.6, 0.4, Suara.efek, { ke: 34, geser: 1.2, serang: 0.02 }); for (let k = 0; k < 14; k++) bising(t + k * 0.03 + Math.random() * 0.03, 0.05, 0.12, 'bandpass', acak(900, 3000), 3, arah(), 0.002); bising(t + 0.2, 1.8, 0.1, 'lowpass', 900, 0.7, Suara.efek, 0.3); },
+  kilau() { if (!siap()) return; const t = T0(), dasar = pilih([84, 86, 88]); [0, 4, 7, 12, 16].forEach((d, i) => osc('sine', hz(dasar + d), t + i * 0.06, 1.2, 0.035, arah(-0.6 + i * 0.3), { serang: 0.004 })); },
+  gesekBatu(d = 1.4) { if (!siap()) return; const t = T0(); const f = bising(t, d, 0.25, 'lowpass', 180, 1.5, arah(acak(-0.3, 0.3)), 0.2); f.frequency.linearRampToValueAtTime(320, t + d); for (let k = 0; k < 18; k++) bising(t + Math.random() * d, 0.04, 0.06, 'bandpass', acak(500, 1400), 2, arah(), 0.002); },
+  retak() { if (!siap()) return; const t = T0(), v = varian('retak', 2); for (let k = 0; k < 6 + v * 4; k++) bising(t + k * 0.025 * (1 + v), 0.05, 0.3 - k * 0.02, 'highpass', acak(1500, 4000), 1, arah(), 0.001); osc('sine', 90, t, 0.4, 0.3, Suara.efek, { ke: 40, geser: 0.3, serang: 0.002 }); },
+  sonar(f = 1046) { if (!siap()) return; const t = T0(); osc('sine', f * acak(0.98, 1.02), t, 1.6, 0.06, arah(acak(-0.4, 0.4)), { serang: 0.004 }); osc('sine', f * 2, t, 0.3, 0.015, Suara.efek); },
+  alarm() { if (!siap()) return; const t = T0(); for (let k = 0; k < 4; k++) osc('square', k % 2 ? 660 : 880, t + k * 0.22, 0.2, 0.035, arah(0), { lp: 2000 }); },
+  kunci() { if (!siap()) return; const t = T0(); bising(t, 0.06, 0.3, 'bandpass', 3000, 4, Suara.efek, 0.001); for (const r of [1, 2.7, 4.1]) osc('sine', 420 * r, t, 0.35 / r, 0.05, Suara.efek, { serang: 0.001 }); osc('sine', 110, t + 0.05, 0.3, 0.2, Suara.efek, { serang: 0.002 }); },
+  derit(d = 1.2) { if (!siap()) return; const t = T0(), a = Suara.ctx; const n = a.createOscillator(), g = a.createGain(), bp = a.createBiquadFilter(); n.type = 'sawtooth'; n.frequency.setValueAtTime(acak(60, 90), t); n.frequency.linearRampToValueAtTime(acak(40, 70), t + d); bp.type = 'bandpass'; bp.frequency.value = acak(700, 1100); bp.Q.value = 8; g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.08, t + 0.2); g.gain.exponentialRampToValueAtTime(0.0001, t + d); n.connect(bp).connect(g).connect(arah()); n.start(t); n.stop(t + d + 0.05); },
+  erangGedung() { if (!siap()) return; const t = T0(); for (const [f, dt] of [[70, 0], [55, 0.4]]) { const n = osc('sawtooth', f, t + dt, 1.6, 0.06, arah(), { ke: f * 0.7, geser: 1.4, lp: 500, q: 6, serang: 0.3 }); } },
+  denyutDalam() { if (!siap()) return; const t = T0(); for (let k = 0; k < 3; k++) osc('sine', 55, t + k * 0.55, 0.5, 0.35 - k * 0.08, Suara.efek, { ke: 38, geser: 0.4, serang: 0.01 }); },
+  jatuhPin() { if (!siap()) return; const t = T0(); osc('sine', 1400, t, 0.35, 0.06, arah(0), { ke: 300, geser: 0.3 }); osc('sine', 120, t + 0.33, 0.35, 0.35, Suara.efek, { ke: 60, geser: 0.2, serang: 0.002 }); bising(t + 0.33, 0.15, 0.1, 'lowpass', 900, 1, Suara.efek, 0.002); },
+  zip() { if (!siap()) return; const t = T0(), a = Suara.ctx, p = a.createStereoPanner ? a.createStereoPanner() : null; if (p) { p.pan.setValueAtTime(-0.9, t); p.pan.linearRampToValueAtTime(0.9, t + 0.4); p.connect(Suara.efek); } osc('sine', 500, t, 0.45, 0.09, p || Suara.efek, { ke: 2400, geser: 0.35 }); },
+  dentum(v = 0.6) { if (!siap()) return; const t = T0(); osc('sine', acak(55, 70), t, 1.8, v, Suara.efek, { ke: 28, geser: 1.4, serang: 0.003 }); bising(t, 0.3, v * 0.3, 'lowpass', 400, 1, Suara.efek, 0.002); bising(t + 0.05, 2.2, v * 0.15, 'lowpass', 160, 0.7, Suara.efek, 0.4); },
+  logam() { if (!siap()) return; const t = T0(), f = acak(180, 260); for (const r of [1, 1.47, 2.09, 2.56, 3.2]) osc('sine', f * r, t, 2.2 / r, 0.05, arah(), { serang: 0.001 }); DRUM.taiko(t, 0.3); },
+  naikLevel(n = 1) { if (!siap()) return; const t = T0(), dasar = 48 + n * 5; [0, 7, 12, 16, 19].forEach((d, i) => osc('triangle', hz(dasar + d), t + i * 0.05, 1.6, 0.05, arah(-0.5 + i * 0.25), { serang: 0.01, lp: 2400 })); osc('sine', 60 - n * 6, t, 1.4, 0.45, Suara.efek, { ke: 30, geser: 1, serang: 0.003 }); DRUM.crash(t, 0.12 + n * 0.04); },
+  kartuKaca() { if (!siap()) return; const t = T0(); osc('sine', 2637, t, 0.5, 0.04, arah(), { serang: 0.002 }); osc('sine', 3951, t + 0.02, 0.3, 0.02, Suara.efek, { serang: 0.002 }); },
+  tabuh() { if (!siap()) return; const t = T0(); [0, 0.12, 0.24, 0.36, 0.5].forEach((d, i) => DRUM.taiko(t + d, 0.25 + i * 0.1)); },
+  akhirMegah() { if (!siap()) return; const t = T0(); for (const m of [50, 57, 62, 66, 69]) INSTR.brass(m, t, 2.4, 0.12); DRUM.taiko(t, 0.8); DRUM.crash(t, 0.2); sfx.kilau(); },
+  // efek lama, kini dengan variasi
+  pop() { sfx.kartu(); },
+  gemuruh(d = 3, vol = 0.5) { if (!siap()) return; const t = T0(); bising(t, d, vol, 'lowpass', acak(90, 140), 0.7, Suara.efek, 0.3); osc('sine', acak(30, 38), t, d, vol * 0.6, Suara.efek, { serang: 0.3 }); for (let k = 0; k < d * 6; k++) bising(t + Math.random() * d, 0.08, vol * 0.25, 'bandpass', acak(200, 700), 2, arah(), 0.005); },
+  tek() { if (!siap()) return; const t = T0(); bising(t, 0.14, 0.6, 'bandpass', acak(1500, 2000), 2, Suara.efek, 0.002); osc('sine', 80, t, 0.7, 0.4, Suara.efek, { ke: 38, geser: 0.4, serang: 0.002 }); },
+  braam(m = 38, v = 0.2) { if (!siap()) return; const t = T0(), a = Suara.ctx, lp = a.createBiquadFilter(), g = a.createGain();
+    lp.type = 'lowpass'; lp.Q.value = 5; lp.frequency.setValueAtTime(160, t); lp.frequency.exponentialRampToValueAtTime(1500, t + 0.16); lp.frequency.exponentialRampToValueAtTime(220, t + 2.4);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(v, t + 0.06); g.gain.exponentialRampToValueAtTime(0.0001, t + 2.8); lp.connect(g).connect(Suara.efek);
+    for (const [mm, det, j] of [[m, -9, 'sawtooth'], [m, 8, 'sawtooth'], [m + 12, 4, 'square'], [m - 12, 0, 'sawtooth']]) { const o = a.createOscillator(); o.type = j; o.frequency.value = hz(mm); o.detune.value = det; o.connect(lp); o.start(t); o.stop(t + 2.9); } },
+  hantam(m = 38) { if (!siap()) return; sfx.braam(m, 0.18); const t = T0(); DRUM.taiko(t, 0.8); osc('sine', 110, t, 1.8, 0.45, Suara.efek, { ke: 26, geser: 1.6, serang: 0.002 }); DRUM.crash(t, 0.2); },
+  riser(d = 2) { if (!siap()) return; const t = T0(), v = varian('riser', 2); const f = bising(t, d, 0.18, 'highpass', 300, 0.8, Suara.efek, d * 0.95); f.frequency.exponentialRampToValueAtTime(7000, t + d);
+    if (v === 0) { for (let k = 0; k < 8; k++) DRUM.snare(t + d * (1 - Math.pow(0.72, k + 1)), 0.04 + k * 0.012); }
+    else { osc('sine', 200, t, d + 0.05, 0.05, Suara.efek, { ke: 1200, geser: d, serang: d * 0.9 }); } },
+  ding(n = 84) { sfx.kilau(); },
+  petir() { if (!siap()) return; const t = T0(), v = varian('petir', 2); bising(t, 0.4, 0.4, 'highpass', v ? 1800 : 900, 0.5, arah(v ? 0.6 : -0.6), 0.002); bising(t + (v ? 0.4 : 0.1), 3, 0.35, 'lowpass', v ? 120 : 200, 0.6, Suara.efek, 0.2); },
+  ombak() { if (!siap()) return; const f = bising(T0(), 5, 0.25, 'lowpass', 400, 0.6, arah(0.3), 1.5); f.frequency.linearRampToValueAtTime(1800, T0() + 4); },
+  pecah() { if (!siap()) return; const t = T0(), v = varian('pecah', 2); for (let i = 0; i < 7; i++) osc('triangle', hz(pilih([88, 91, 94, 97, 100]) + (v ? 2 : 0)), t + i * acak(0.02, 0.06), 0.3, 0.045, arah(), { serang: 0.001 }); bising(t, 0.35, 0.22, 'highpass', v ? 4500 : 3000, 0.5, Suara.efek, 0.002); },
+  jantung() { if (!siap()) return; const t = T0(); for (const [dt, v] of [[0, 1], [0.2, 0.7]]) osc('sine', 70, t + dt, 0.22, 0.7 * v, Suara.master, { ke: 38, geser: 0.12, serang: 0.002 }); },
+  detak() { if (!siap()) return; osc('square', varian('detak', 2) ? 1900 : 1500, T0(), 0.025, 0.1, Suara.efek, { serang: 0.001, lp: 5000 }); },
+  bip(n = 86) { if (!siap()) return; osc('sine', hz(n + (varian('bip', 2) ? 0 : -5)), T0(), 0.12, 0.08, Suara.efek, { serang: 0.002 }); },
+  sirene(d = 3) { if (!siap()) return; const a = Suara.ctx, t = T0(), o = a.createOscillator(), lfo = a.createOscillator(), lg = a.createGain(), g = a.createGain();
+    o.type = 'triangle'; o.frequency.value = 700; lfo.frequency.value = 0.7; lg.gain.value = 180; lfo.connect(lg).connect(o.frequency);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.06, t + 0.5); g.gain.setValueAtTime(0.06, t + d - 0.6); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    o.connect(g).connect(arah(-0.3)); o.start(t); lfo.start(t); o.stop(t + d + 0.1); lfo.stop(t + d + 0.1); },
 };
-// musik berlapis: makin tinggi energi adegan, makin banyak lapisan yang masuk
+// ---------- musik: tiap suasana punya instrumen & progresi sendiri (A/B bergantian supaya tidak monoton)
 const MUSIK = {
-  horor:     { akor: [[38, 41, 45], [38, 39, 45], [37, 41, 44], [38, 41, 44]], gelap: true },
-  misteri:   { akor: [[50, 53, 57], [46, 50, 53], [43, 46, 50], [45, 49, 52]], motif: [0, 2, 1, 3, 2, 1, 0, 2] },
-  penasaran: { akor: [[57, 60, 64], [53, 57, 60], [48, 52, 55], [55, 59, 62]], motif: [0, 1, 2, 1, 3, 2, 1, 0] },
-  tegang:    { akor: [[50, 53, 57], [46, 50, 53], [48, 51, 55], [49, 52, 56]], motif: [0, 0, 2, 1, 0, 2, 3, 2], ostinato: true },
-  harapan:   { akor: [[53, 57, 60], [48, 52, 55], [50, 53, 57], [46, 50, 53]], motif: [2, 1, 0, 1, 2, 3, 2, 1] },
-  epik:      { akor: [[50, 53, 57], [46, 50, 53], [48, 52, 55], [45, 49, 52]], motif: [0, 2, 3, 2, 1, 2, 0, 1], ostinato: true },
+  horor:     { akor: [[[38, 41, 45], [38, 39, 45], [37, 41, 44], [38, 41, 44]]], gelap: true },
+  misteri:   { akor: [[[50, 53, 57], [46, 50, 53], [43, 46, 50], [45, 49, 52]], [[50, 53, 57], [48, 52, 55], [46, 50, 53], [45, 49, 52]]], pad: 'pad', arp: 'bel', melodi: 'bel', arpJarang: true },
+  penasaran: { akor: [[[57, 60, 64], [53, 57, 60], [48, 52, 55], [55, 59, 62]], [[57, 60, 64], [55, 59, 62], [53, 57, 60], [52, 56, 59]]], pad: 'pad', arp: 'marimba', melodi: 'bel', bass: 'pizz' },
+  tegang:    { akor: [[[50, 53, 57], [46, 50, 53], [48, 51, 55], [49, 52, 56]], [[50, 53, 57], [51, 55, 58], [48, 51, 55], [49, 52, 56]]], pad: 'senarPad', ostinato: 'senarPendek', melodi: 'piano' },
+  harapan:   { akor: [[[53, 57, 60], [48, 52, 55], [50, 53, 57], [46, 50, 53]], [[46, 50, 53], [48, 52, 55], [53, 57, 60], [53, 57, 60]]], pad: 'pad', arp: 'piano', melodi: 'bel', bass: 'bass' },
+  epik:      { akor: [[[50, 53, 57], [46, 50, 53], [48, 52, 55], [45, 49, 52]], [[46, 50, 53], [48, 52, 55], [50, 53, 57], [50, 53, 57]]], pad: 'senarPad', ostinato: 'senarPendek', melodi: 'brass', tiup: true },
 };
 const BPM = 96, L16 = 60 / BPM / 4;
 const Pemutar = { mood: null, ingin: null, langkah: 0, berikut: 0, energi: 0, target: 0 };
@@ -793,24 +869,23 @@ function detakMusik() {
     if (l === 0) Pemutar.mood = Pemutar.ingin;
     const m = MUSIK[Pemutar.mood], E = Pemutar.energi;
     if (m && E > 0.02) {
-      const ak = m.akor[bar % 4], v = 0.025 + 0.03 * E;
+      const prog = m.akor[Math.floor(bar / 4) % m.akor.length], ak = prog[bar % 4], v = 0.025 + 0.03 * E;
       if (m.gelap) {
-        // dengung gelap & cluster disonan
-        if (l === 0) { nada(ak[0], t, L16 * 17, v * 2.2, 'sawtooth', Suara.musik, 1.2); nada(ak[0] + 0.1, t, L16 * 17, v * 1.6, 'sawtooth', Suara.musik, 1.2); nada(ak[0] - 12, t, L16 * 17, v * 2.5, 'sine', Suara.musik, 1); }
-        if (l === 8 && E > 0.3) nada(ak[1] + 24, t, L16 * 8, v * 0.8, 'sine', Suara.musik, 0.8);
-        if (E > 0.55 && l % 4 === 0) ALAT.taiko(t, 0.25 + 0.3 * E);
+        if (l === 0 && bar % 2 === 0) INSTR.dengung(ak[0], t, L16 * 34, v * 2.4);
+        if (l === 8 && E > 0.3 && Math.random() < 0.6) INSTR.bel(ak[1] + 24 + pilih([0, 1]), t, 1.6, v * 0.6);
+        if (E > 0.55 && (l === 0 || l === 6 || l === 10)) DRUM.taiko(t, 0.2 + 0.3 * E);
       } else {
-        if (l === 0) for (const n of ak) { nada(n, t, L16 * 16, v * (0.45 + 0.5 * E), 'sawtooth', Suara.musik, 0.6); }
-        if (l === 0) nada(ak[0] - 24, t, L16 * 16, v * 2.2, 'sine', Suara.musik, 0.3);
-        if (m.ostinato && E > 0.3 && (l % 2 === 0 || E > 0.7)) nada(ak[0] - 12, t, L16 * 0.9, v * 1.3, 'sawtooth');
-        if (!m.ostinato && E > 0.3 && (l % 2 === 0 || E > 0.8)) { const i = [0, 1, 2, 1][(l >> (E > 0.8 ? 0 : 1)) % 4]; nada(ak[i] + 12, t, L16 * 2.2, v * 0.8, 'triangle'); }
-        if (E > 0.45 && l % 4 === 0) { const i = m.motif[(bar % 2) * 4 + l / 4]; const n = i === 3 ? ak[0] + 12 : ak[i]; nada(n + 24, t, L16 * 3.5, v * 0.7, 'sine'); }
-        if (E > 0.35 && (l % 2 === 0 || E > 0.85)) ALAT.hat(t, 0.02 + 0.03 * E);
-        if (E > 0.5 && (l === 0 || l === 8 || (E > 0.72 && (l === 6 || l === 10)))) ALAT.kick(t, 0.3 + 0.25 * E);
-        if (E > 0.62 && (l === 4 || l === 12)) ALAT.snare(t, 0.1 + 0.1 * E);
-        if (E > 0.75 && (l === 0 || l === 3 || l === 6)) ALAT.taiko(t, 0.2 + 0.3 * E);
-        if (E > 0.7 && bar % 4 === 3 && l >= 12) ALAT.snare(t, 0.05 + 0.1 * (l - 11) / 4);
-        if (E > 0.85 && bar % 4 === 0 && l === 0) ALAT.braam(t, ak[0] - 12, 0.12);
+        if (l === 0) for (const n of ak) INSTR[m.pad](n, t, L16 * 16, v * (0.5 + 0.5 * E));
+        if (l === 0 || (E > 0.5 && l === 8)) INSTR[m.bass || 'bass'](ak[0] - 24, t, L16 * 7, v * 2);
+        if (m.ostinato && E > 0.3 && (l % 2 === 0 || E > 0.72)) INSTR[m.ostinato](ak[(l % 8 === 6) ? 1 : 0] - 12, t, L16, v * 1.3);
+        if (m.arp && E > 0.25 && (m.arpJarang ? l % 4 === 2 : (l % 2 === 0 || E > 0.8))) { const pola = bar % 2 ? [0, 2, 1, 2] : [0, 1, 2, 1]; const i = pola[(l >> (E > 0.8 && !m.arpJarang ? 0 : 1)) % 4]; INSTR[m.arp](ak[i] + 12, t, L16 * 2.5, v * 0.8); }
+        if (E > 0.45 && l % 4 === 0 && Math.random() < 0.85) { const n = ak[Math.floor(Math.random() * 3)] + 24; INSTR[m.melodi](m.melodi === 'brass' ? n - 12 : n, t, L16 * (m.melodi === 'brass' ? 6 : 3.5), v * (m.melodi === 'brass' ? 1.2 : 0.7)); }
+        if (E > 0.35 && (l % 2 === 0 || E > 0.85)) (Pemutar.mood === 'penasaran' || Pemutar.mood === 'harapan' ? DRUM.shaker : DRUM.hat)(t, 0.02 + 0.03 * E);
+        if (E > 0.5 && (l === 0 || l === 8 || (E > 0.72 && (l === 6 || l === 10)))) DRUM.kick(t, 0.3 + 0.25 * E);
+        if (E > 0.62 && (l === 4 || l === 12)) DRUM.snare(t, 0.1 + 0.1 * E);
+        if (E > 0.75 && m.tiup && (l === 0 || l === 3 || l === 6)) DRUM.taiko(t, 0.2 + 0.3 * E);
+        if (E > 0.7 && bar % 4 === 3 && l >= 12) DRUM.snare(t, 0.05 + 0.1 * (l - 11) / 4);
+        if (E > 0.8 && bar % 8 === 0 && l === 0) DRUM.crash(t, 0.1);
       }
     }
     Pemutar.berikut += L16; Pemutar.langkah++;
@@ -1035,8 +1110,8 @@ const ADEGAN = [
       ...[0.3, 1.25, 2.15, 3.0, 3.8, 4.5, 5.15, 5.75].map(t => [t, sfx.jantung]),
       ...[3.2, 4.0, 4.8, 5.6].map(t => [t, () => sfx.bip(86)]),
       ...Array.from({ length: 12 }, (_, i) => [0.5 + i * 0.5, sfx.detak]),
-      [6.2, () => { sfx.braam(38); sfx.sirene(5); }], [6.25, () => sfx.gemuruh(5.4, 0.35)], [7.6, () => sfx.braam(37)],
-      [9.0, () => { sfx.braam(36); sfx.gemuruh(2.6, 0.7); sfx.pecah(); }], [10.2, sfx.pecah], [9.6, () => sfx.riser(2)],
+      [6.2, () => { sfx.braam(38); sfx.sirene(5); }], [6.25, () => sfx.gemuruh(5.4, 0.35)], [6.6, sfx.alarm], [7.6, sfx.erangGedung], [8.3, sfx.derit],
+      [9.0, () => { sfx.retak(); sfx.dentum(0.7); sfx.gemuruh(2.6, 0.7); sfx.pecah(); }], [9.4, sfx.logam], [10.2, sfx.pecah], [10.7, sfx.retak], [9.6, () => sfx.riser(2)],
       [12.2, () => sfx.hantam(38)],
     ],
     gambar(lt, dt) {
@@ -1099,7 +1174,7 @@ const ADEGAN = [
         if (dt > 0 && Math.random() < dt * 30) tebar(1, () => ({ jenis: 'bara', x: acak(200, 1080), y: 740, vx: acak(-20, 20), vy: acak(-160, -60), umur: 3, umurAwal: 3, r: acak(1.5, 4), warna: pilih(['rgba(255,140,40,1)', 'rgba(255,80,20,1)', 'rgba(255,210,120,1)']) }));
         gambarPartikel(0);
         gelombangKejut(640, 330, klem((lt - 12.2) / 1.2), 900, '255,170,90');
-        teksKinetik(lt, 12.25, 'GEMPA BUMI', 640, 318, 220, { dari: 3, jeda: 0.06, durasi: 0.3, gradasi: ['#fff6e0', '#ffb347', '#ff5a1f', '#8a1a0a'], glow: 'rgba(255,90,20,.9)', glowBesar: 40, spasi: 6 });
+        teksKinetik(lt, 12.25, 'GEMPA BUMI', 640, 318, 220, { kilap: true, dari: 3, jeda: 0.06, durasi: 0.3, gradasi: ['#fff6e0', '#ffb347', '#ff5a1f', '#8a1a0a'], glow: 'rgba(255,90,20,.9)', glowBesar: 40, spasi: 6 });
         teksKinetik(lt, 13.3, 'APA YANG TERJADI DI BAWAH KAKI KITA?', 640, 452, 34, { dari: 1.6, jeda: 0.02, font: FONT_HUD, warna: '#ffd9c2', spasi: 3 });
       }
     }
@@ -1108,7 +1183,7 @@ const ADEGAN = [
   {
     nama: 'Isi Bumi', dur: 16.5, transisi: 'kilat', musik: () => 'misteri', energi: lt => kf(lt, [[0, 0.35], [8, 0.5], [16, 0.55]]),
     teks: [[0.6, 4, 'Untuk menjawabnya, kita harus menyelam jauh ke dalam Bumi.'], [4.4, 8, 'Paling luar ada kerak: lapisan tipis tempat kita berdiri.'], [8.4, 12.8, 'Di bawahnya, mantel yang panas dan perlahan mengalir, lalu inti Bumi yang membara.'], [13.2, 16.2, 'Dan kunci dari gempa… ada di kerak ini.']],
-    acara: [[0.1, () => sfx.wus(0.8)], [3.4, () => { sfx.wus(0.6); sfx.braam(41); }], [4.6, sfx.pop], [8.6, sfx.pop], [10.6, sfx.pop], [11.8, sfx.pop], [13.2, () => sfx.ding(86)]],
+    acara: [[0.1, sfx.angkasa], [3.3, sfx.belah], [4.6, () => sfx.hudKetik(0)], [8.6, () => sfx.hudKetik(1)], [10.6, () => sfx.hudKetik(2)], [11.8, () => sfx.hudKetik(3)], [13.2, sfx.kilau]],
     gambar(lt, dt) {
       goncang = 0; glitch = 0; bloom = 1.3; grain = 1;
       ctx.save(); kamera(kfh(lt, [[0, 0.7], [3.4, 1], [16.5, 1.1]]), kfh(lt, [[0, 520], [16.5, 560]]), 360, kfh(lt, [[0, -0.08], [4, 0]]));
@@ -1141,14 +1216,13 @@ const ADEGAN = [
         for (const [r, t0, nm, sub, ly] of titik) hud(lt, t0, cx + Math.cos(am) * r, cy + Math.sin(am) * r, 900, ly, nm, sub, nm === 'KERAK' && lt > 13.2 ? W.kuning : W.cyan);
       }
       ctx.restore();
-      teksKinetik(lt, 0.3, 'PERJALANAN KE PUSAT BUMI', 640, 64, 34, { dari: 1.6, jeda: 0.03, font: FONT_HUD, warna: '#9fdcff', spasi: 4, sampai: 3.4 });
     }
   },
   // ================================================================ 2. LEMPENG
   {
     nama: 'Lempeng', dur: 15, transisi: 'geser', musik: () => 'penasaran', energi: lt => kf(lt, [[0, 0.45], [5.6, 0.6], [15, 0.62]]),
     teks: [[0.5, 5.2, 'Kerak Bumi ternyata retak-retak menjadi potongan raksasa: lempeng tektonik.'], [5.6, 9.6, 'Lempeng-lempeng ini terus bergerak, beberapa sentimeter setiap tahun.'], [10, 14.6, 'Pelan sekali… kira-kira secepat kuku kita tumbuh.']],
-    acara: [[1.6, () => { sfx.tek(); sfx.braam(40); }], [2.4, sfx.pop], [5.8, () => sfx.wus(0.7)], [10.2, sfx.pop]],
+    acara: [[1.6, () => { sfx.retak(); sfx.gesekBatu(1.2); }], [2.8, sfx.judul], [5.8, () => sfx.gesekBatu(2.4)], [10.2, sfx.kartu], [10.5, sfx.kartuKaca]],
     gambar(lt, dt) {
       goncang = lt > 1.6 && lt < 2 ? 0.6 : 0; glitch = 0; bloom = 1.1; grain = 1;
       const bg = ctx.createRadialGradient(640, 380, 50, 640, 380, 900); bg.addColorStop(0, '#12305c'); bg.addColorStop(1, '#050b1c');
@@ -1187,7 +1261,8 @@ const ADEGAN = [
           ctx.restore(); tanpaSinar();
         }
       }
-      teksKinetik(lt, 2.2, 'LEMPENG TEKTONIK', 640, 80, 72, { dari: 2.6, jeda: 0.05, gradasi: ['#ffffff', '#9fdcff'], glow: 'rgba(80,180,255,.9)', spasi: 4 });
+      debuMelayang(50, '140,200,255', 2, 0.8);
+      teksKinetik(lt, 3.0, 'LEMPENG TEKTONIK', 640, 80, 72, { kilap: true, dari: 2.6, jeda: 0.05, gradasi: ['#ffffff', '#9fdcff'], glow: 'rgba(80,180,255,.9)', spasi: 4 });
       const k = pop(lt, 10.2, 0.5);
       diSkala(1010, 560, k, () => {
         kartuKaca(-190, -80, 380, 150, 20, 'rgba(10,20,45,.7)', 'rgba(150,210,255,.5)');
@@ -1201,7 +1276,7 @@ const ADEGAN = [
   {
     nama: 'Indonesia', dur: 15, transisi: 'glitch', musik: () => 'tegang', energi: lt => kf(lt, [[0, 0.45], [10, 0.6], [10.4, 0.85], [15, 0.7]]),
     teks: [[0.5, 4.8, 'Indonesia berada di tempat yang istimewa, sekaligus berbahaya.'], [5.2, 10, 'Tiga lempeng besar bertemu di sini: Eurasia, Indo-Australia, dan Pasifik.'], [10.4, 14.6, 'Itulah kenapa negeri kita termasuk yang paling sering diguncang gempa.']],
-    acara: [[0.2, () => sfx.wus(0.6)], [5.6, sfx.pop], [7.0, sfx.pop], [8.4, sfx.pop], [10.4, () => { sfx.braam(38); sfx.gemuruh(1.5, 0.3); }], ...[1.5, 3.5, 5.5, 7.5, 9.5, 11.5, 13.5].map(t => [t, () => sfx.bip(98)])],
+    acara: [[0.2, () => sfx.sonar(784)], [5.6, () => sfx.hudKetik(0)], [7.0, () => sfx.hudKetik(1)], [8.4, () => sfx.hudKetik(2)], [10.4, () => { sfx.alarm(); sfx.gemuruh(1.5, 0.3); }], ...[2.2, 4.4, 6.6, 8.8, 11, 13.2].map((t, k) => [t, () => sfx.sonar([1046, 988, 1175, 880][k % 4])])],
     gambar(lt, dt) {
       goncang = lt > 10.4 && lt < 11.2 ? 0.4 : 0; glitch = lt > 10.4 && lt < 10.7 ? 0.5 : 0; bloom = 1.3; grain = 1.2;
       ctx.fillStyle = '#030a16'; ctx.fillRect(-100, -100, SW + 200, SH + 200);
@@ -1240,8 +1315,10 @@ const ADEGAN = [
       hud(lt, 7.0, 500, 600, 150, 575, 'INDO-AUSTRALIA', 'bergerak ke utara', '#ffb347', true);
       hud(lt, 8.4, 1130, 260, 1170, 160, 'PASIFIK', 'bergerak ke barat', '#ff6b6b', false);
       ctx.restore();
+      ctx.globalAlpha = klem((lt - 3) / 0.5);
       teks('PETA LEMPENG · INDONESIA', 40, 40, 20, 'rgba(63,240,255,.85)', FONT_HUD, 400, 'left');
       teks(`LAT ${(-2.5 + Math.sin(waktu) * 0.01).toFixed(3)}  LON ${(118 + Math.cos(waktu) * 0.01).toFixed(3)}`, 40, 66, 15, 'rgba(63,240,255,.55)', FONT_HUD, 400, 'left');
+      ctx.globalAlpha = 1;
       if (lt > 10.4) { const a = klem((lt - 10.4) * 2); ctx.globalAlpha = a; kartuKaca(900, 24, 340, 64, 12, 'rgba(60,5,5,.7)', 'rgba(255,90,80,.7)'); teks('⚠ ZONA RAWAN GEMPA', 1070, 57, 30, '#ff6b5e', FONT_JUDUL, 400, 'center', 310); ctx.globalAlpha = 1; }
     }
   },
@@ -1250,7 +1327,7 @@ const ADEGAN = [
     nama: 'Kenapa Gempa', dur: 19, transisi: 'kilat', musik: lt => lt < 10.6 ? 'tegang' : lt < 11.4 ? null : 'epik',
     energi: lt => kf(lt, [[0, 0.35], [8, 0.75], [10.5, 0.95], [10.6, 0], [11.4, 0], [11.5, 1], [14, 0.9], [19, 0.5]]),
     teks: [[0.5, 4.2, 'Di perbatasan lempeng, dua raksasa saling dorong dan saling mengunci.'], [4.6, 9.4, 'Tekanan menumpuk sedikit demi sedikit, bertahun-tahun, seperti penggaris yang dibengkokkan…'], [9.8, 12.4, '…sampai akhirnya patah, dan lepas tiba-tiba!'], [13, 18.6, 'Energi raksasa itu menyebar ke segala arah sebagai getaran. Itulah gempa bumi.']],
-    acara: [[1.0, sfx.pop], [2.0, sfx.pop], [3.0, () => sfx.braam(38)], [4.8, () => sfx.wus(0.6)], [8.4, () => sfx.riser(2.2)], [10.6, () => { sfx.tek(); sfx.hantam(36); sfx.gemuruh(3.5, 0.6); }], [13.2, () => sfx.braam(41)]],
+    acara: [[1.0, () => sfx.hudKetik(0)], [2.0, () => sfx.hudKetik(1)], [3.0, sfx.kunci], [4.8, sfx.kartu], [5.6, () => sfx.derit(1.4)], [7.2, () => sfx.derit(1.6)], [8.4, () => sfx.riser(2.2)], [9.2, () => sfx.derit(1.2)], [10.6, () => { sfx.tek(); sfx.hantam(36); sfx.gemuruh(3.5, 0.6); sfx.retak(); }], [13.2, () => sfx.dentum(0.35)]],
     gambar(lt, dt) {
       const SNAP = 10.6;
       let b = kf(lt, [[1, 0], [SNAP, 1]], halus);
@@ -1295,6 +1372,7 @@ const ADEGAN = [
       if (kunci > 0) diSkala(630, 300, pop(lt, 3) * kunci, () => { sinar('#ffd23f', 20); ctx.fillStyle = W.kuning; rrect(-18, -10, 36, 30, 6); ctx.fill(); ctx.strokeStyle = W.kuning; ctx.lineWidth = 6; ctx.beginPath(); ctx.arc(0, -10, 12, Math.PI, 0); ctx.stroke(); tanpaSinar(); ctx.fillStyle = '#1b1b1b'; bulat(0, 4, 4); ctx.fill(); });
       if (lt > SNAP) { gelombangKejut(640, 370, klem((lt - SNAP - 0.05) / 1.6), 1100, '255,230,200'); gelombangKejut(640, 370, klem((lt - SNAP - 0.9) / 1.8), 1100, '255,160,90'); }
       gambarPartikel(0);
+      debuMelayang(45, '255,190,140', 4, 1.2);
       ctx.restore();
       hud(lt, 1.0, 200, 400, 150, 470, 'LEMPENG SAMUDRA', 'menunjam ke bawah', W.cyan, true);
       hud(lt, 2.0, 1100, 380, 1130, 470, 'LEMPENG BENUA', 'tertahan & terseret', '#ffb347', false);
@@ -1323,14 +1401,14 @@ const ADEGAN = [
         }
         teks('SEPERTI PENGGARIS…', 0, -70, 18, '#9fdcff', FONT_HUD, 400);
       });
-      teksKinetik(lt, SNAP + 0.05, 'GEMPA!', 640, 210, 170, { dari: 3.2, jeda: 0.05, durasi: 0.25, gradasi: ['#ffffff', '#ffb347', '#ff3b30'], glow: 'rgba(255,60,30,.95)', glowBesar: 40, sampai: 14.2 });
+      teksKinetik(lt, SNAP + 0.05, 'GEMPA!', 640, 210, 170, { kilap: true, dari: 3.2, jeda: 0.05, durasi: 0.25, gradasi: ['#ffffff', '#ffb347', '#ff3b30'], glow: 'rgba(255,60,30,.95)', glowBesar: 40, sampai: 14.2 });
     }
   },
   // ================================================================ 5. TITIK GEMPA (balok 3D)
   {
     nama: 'Titik Gempa', dur: 12.5, transisi: 'iris', musik: () => 'misteri', energi: lt => kf(lt, [[0, 0.4], [12, 0.5]]),
     teks: [[0.5, 5, 'Titik asal gempa di dalam Bumi disebut hiposentrum.'], [5.4, 11.8, 'Sedangkan titik di permukaan, tepat di atasnya, disebut episentrum.']],
-    acara: [[1.0, () => sfx.braam(43)], [1.4, sfx.pop], [6.2, sfx.pop], [6.6, sfx.pop]],
+    acara: [[1.0, sfx.denyutDalam], [1.4, () => sfx.hudKetik(0)], [6.2, sfx.jatuhPin], [6.6, () => sfx.hudKetik(2)]],
     gambar(lt, dt) {
       goncang = 0; glitch = 0; bloom = 1.25; grain = 1;
       const bg = ctx.createLinearGradient(0, 0, 0, SH); bg.addColorStop(0, '#0b1633'); bg.addColorStop(1, '#1d2a55'); ctx.fillStyle = bg; ctx.fillRect(-100, -100, SW + 200, SH + 200);
@@ -1363,6 +1441,7 @@ const ADEGAN = [
       const pin = pop(lt, 6.2, 0.6);
       if (pin > 0) { ctx.save(); ctx.translate(640, 300 - (1 - Math.min(1, pin)) * 80); sinar('#ff3b30', 20); ctx.fillStyle = '#ff3b30'; ctx.beginPath(); ctx.moveTo(0, 0); ctx.bezierCurveTo(-30, -40, -24, -72, 0, -72); ctx.bezierCurveTo(24, -72, 30, -40, 0, 0); ctx.fill(); tanpaSinar(); ctx.fillStyle = '#fff'; bulat(0, -48, 10); ctx.fill(); ctx.restore(); lingkarGlow(640, 70, 140, 'rgba(255,90,60,A)', 0.2 * pin); }
       ctx.restore();
+      debuMelayang(40, '255,200,170', 7, 0.7);
       hud(lt, 1.4, 660, 610, 870, 610, 'HIPOSENTRUM', 'titik asal di dalam Bumi', '#ff6b5e', true);
       hud(lt, 6.6, 620, 240, 410, 150, 'EPISENTRUM', 'tepat di atasnya', '#ffd23f', false);
     }
@@ -1371,7 +1450,7 @@ const ADEGAN = [
   {
     nama: 'Gelombang', dur: 15, transisi: 'geser', musik: () => 'tegang', energi: lt => kf(lt, [[0, 0.45], [4.4, 0.6], [8.8, 0.62], [8.9, 0.95], [15, 0.7]]),
     teks: [[0.5, 4, 'Dari sana, getaran merambat sebagai gelombang seismik.'], [4.4, 8.4, 'Gelombang P datang lebih dulu: cepat, tapi lemah.'], [8.8, 14.6, 'Disusul gelombang S: lebih lambat, tapi guncangannya jauh lebih kuat.']],
-    acara: [[4.8, sfx.pop], [4.8, () => sfx.bip(92)], [8.9, () => { sfx.hantam(40); sfx.gemuruh(2.4, 0.4); }]],
+    acara: [[0.8, () => sfx.hudKetik(1)], [4.6, sfx.zip], [4.8, sfx.kartu], [8.9, () => { sfx.dentum(0.7); sfx.gemuruh(2.4, 0.45); }], [9.0, sfx.kartu]],
     gambar(lt, dt) {
       const fx = 220, fy = 600, sx = 1000, sy = 262, vP = 245, vS = 106, jarak = Math.hypot(sx - fx, sy - fy);
       const tP = 1 + jarak / vP, tS = 1 + jarak / vS;
@@ -1395,6 +1474,7 @@ const ADEGAN = [
       ctx.restore();
       if (lt > tP) gelombangKejut(sx, sy - 30, klem((lt - tP) / 1), 120, '60,200,255');
       if (lt > tS) gelombangKejut(sx, sy - 30, klem((lt - tS) / 1.2), 220, '255,90,90');
+      debuMelayang(35, '160,220,255', 9, 0.6);
       hud(lt, 0.8, sx - 60, sy - 60, 820, 150, 'STASIUN SEISMIK', 'mencatat getaran', '#9fdcff', false);
       monitorSeismo(680, 30, 560, 110, lt, t => { let a = 1.5; if (t > tP) a += 12 * Math.exp(-(t - tP) * 0.4); if (t > tS) a += 44 * Math.exp(-(t - tS) * 0.45); return a; }, lt > tS ? '#ff5a6a' : '#46ffb4', 'SEISMOGRAM', { kecepatan: 90 });
       if (lt > 4.4) { const a = pop(lt, 4.4); diSkala(330, 150, a, () => { kartuKaca(-170, -30, 340, 60, 30, 'rgba(10,40,80,.75)', 'rgba(60,200,255,.8)'); teks('GELOMBANG P · CEPAT', 0, 2, 30, '#6fd8ff', FONT_JUDUL, 400, 'center', 310); }); }
@@ -1405,7 +1485,7 @@ const ADEGAN = [
   {
     nama: 'Magnitudo', dur: 12.5, transisi: 'kilat', musik: () => 'tegang', energi: lt => kf(lt, [[0, 0.55], [4.6, 0.7], [7.4, 0.9], [12.5, 0.7]]),
     teks: [[0.5, 4, 'Kekuatan gempa diukur dengan magnitudo.'], [4.4, 11.8, 'Naik satu angka saja, energinya kira-kira tiga puluh dua kali lipat!']],
-    acara: [[4.6, () => { sfx.braam(40); sfx.pop(); }], [7.4, () => { sfx.hantam(38); }]],
+    acara: [[0.3, sfx.judul], [1.0, sfx.kilau], [4.6, () => sfx.naikLevel(1)], [7.4, () => { sfx.naikLevel(2); sfx.dentum(0.5); }]],
     gambar(lt, dt) {
       goncang = lt > 7.4 && lt < 8.2 ? 0.5 : 0; glitch = 0; bloom = 1.5; grain = 1; kilat = (lt > 4.6 && lt < 4.8 ? 0.35 : 0) + (lt > 7.4 && lt < 7.7 ? 0.6 : 0);
       const bg = ctx.createRadialGradient(640, 400, 20, 640, 400, 800); bg.addColorStop(0, '#2a1440'); bg.addColorStop(1, '#05030d'); ctx.fillStyle = bg; ctx.fillRect(-100, -100, SW + 200, SH + 200);
@@ -1418,7 +1498,7 @@ const ADEGAN = [
       ctx.restore();
       if (lt > 4.6) gelombangKejut(cx, cy, klem((lt - 4.6) / 1), 500, '255,190,120', 0.8);
       if (lt > 7.4) gelombangKejut(cx, cy, klem((lt - 7.4) / 1.2), 900, '255,120,60', 0.8);
-      teksKinetik(lt, 0.3, 'MAGNITUDO', 640, 70, 54, { dari: 2, jeda: 0.04, warna: '#d9c8ff', glow: 'rgba(160,120,255,.8)', spasi: 10 });
+      teksKinetik(lt, 2.8, 'MAGNITUDO', 640, 70, 54, { kilap: true, dari: 2, jeda: 0.04, warna: '#d9c8ff', glow: 'rgba(160,120,255,.8)', spasi: 10 });
       const angka = lt < 4.6 ? 5 : lt < 7.4 ? lerp(5, 6, klem((lt - 4.6) / 0.4)) : lerp(6, 7, klem((lt - 7.4) / 0.4));
       diSkala(640, 170, 1 + 0.15 * (Math.exp(-Math.max(0, lt - 4.6) * 6) * (lt > 4.6 ? 1 : 0) + Math.exp(-Math.max(0, lt - 7.4) * 6) * (lt > 7.4 ? 1 : 0)), () => {
         sinar('rgba(255,140,40,1)', 30); teks(`M ${angka.toFixed(1)}`, 0, 0, 110, '#ffe7c2', FONT_JUDUL, 400); tanpaSinar();
@@ -1433,7 +1513,7 @@ const ADEGAN = [
   {
     nama: 'Tsunami', dur: 11.5, transisi: 'glitch', musik: () => 'epik', energi: lt => kf(lt, [[0, 0.65], [1, 0.8], [5.4, 0.9], [5.5, 1], [11.5, 0.8]]),
     teks: [[0.5, 5, 'Jika gempa kuat terjadi di bawah laut, dasar laut bisa terangkat…'], [5.4, 11, '…mendorong kolom air raksasa menjadi gelombang tsunami.']],
-    acara: [[1, () => { sfx.tek(); sfx.gemuruh(1.6, 0.4); }], [2.4, sfx.ombak], [3.2, () => sfx.riser(2.2)], [5.4, () => { sfx.hantam(36); sfx.sirene(5.5); }], [2.0, sfx.petir], [8.2, sfx.petir]],
+    acara: [[1, () => { sfx.tek(); sfx.gemuruh(1.6, 0.4); }], [2.4, sfx.ombak], [3.2, () => sfx.riser(2.2)], [5.4, () => { sfx.hantam(36); sfx.sirene(5.5); }], [2.0, sfx.petir], [8.2, sfx.petir], [1.3, () => sfx.hudKetik(0)]],
     gambar(lt, dt) {
       goncang = (lt > 1 && lt < 2 ? 0.6 : 0) + (lt > 5.4 ? 0.2 : 0); glitch = 0; bloom = 1.2; grain = 1.3;
       const petir = (lt > 2 && lt < 2.25) || (lt > 8.2 && lt < 8.4); kilat = petir ? 0.35 : 0;
@@ -1468,14 +1548,14 @@ const ADEGAN = [
   {
     nama: 'Saat Gempa', dur: 17.5, transisi: 'iris', musik: () => 'harapan', energi: lt => kf(lt, [[0, 0.45], [11.8, 0.6], [12.4, 0.85], [17.5, 0.8]]),
     teks: [[0.5, 3.4, 'Lalu, apa yang harus kita lakukan saat gempa datang?'], [3.8, 8.8, 'Merunduk, berlindung di bawah meja yang kuat, dan berpegangan.'], [9.2, 11.6, 'Jauhi kaca dan lemari yang bisa roboh.'], [12, 17.2, 'Dan jika kamu di pantai setelah gempa kuat, segera lari ke tempat tinggi!']],
-    acara: [[4.0, sfx.pop], [5.4, sfx.pop], [7.0, sfx.pop], [9.4, sfx.pecah], [11.8, () => sfx.wus(0.7)], [12.6, () => sfx.braam(45)]],
+    acara: [[0.3, sfx.judul], [4.0, sfx.kartu], [5.4, sfx.kartu], [7.0, sfx.kartu], [9.4, sfx.pecah], [11.8, () => sfx.wus(0.7)], [12.6, sfx.tabuh]],
     gambar(lt, dt) {
       goncang = 0; glitch = 0; bloom = 1; grain = 0.8;
       const bg = ctx.createLinearGradient(0, 0, SW, SH); bg.addColorStop(0, '#12355b'); bg.addColorStop(0.5, '#1f5f7a'); bg.addColorStop(1, '#3b2a6a'); ctx.fillStyle = bg; ctx.fillRect(-100, -100, SW + 200, SH + 200);
       ctx.save(); ctx.globalCompositeOperation = 'lighter'; for (let i = 0; i < 9; i++) lingkarGlow(((i * 163 + waktu * 18) % 1500) - 100, 100 + (i * 97) % 520, 60 + (i % 3) * 40, pilih(['rgba(120,220,255,A)']), 0.14); ctx.restore();
       const geser = kfh(lt, [[11.8, 0], [12.5, -1500]]);
       ctx.save(); ctx.translate(geser, 0);
-      teksKinetik(lt, 0.3, 'SAAT GEMPA TERJADI', 640, 70, 60, { dari: 2.2, jeda: 0.035, warna: '#ffffff', glow: 'rgba(120,220,255,.8)', spasi: 6 });
+      teksKinetik(lt, 2.9, 'SAAT GEMPA TERJADI', 640, 70, 60, { kilap: true, dari: 2.2, jeda: 0.035, warna: '#ffffff', glow: 'rgba(120,220,255,.8)', spasi: 6 });
       if (lt < 3.8) kiki(640, 600, 1.1, { ekspresi: 'mikir', tangan: 'kepala' });
       const langkah = [[240, 4.0, '1', 'MERUNDUK'], [640, 5.4, '2', 'BERLINDUNG'], [1040, 7.0, '3', 'BERPEGANGAN']];
       for (const [x, t0, n, judul] of langkah) {
@@ -1512,7 +1592,7 @@ const ADEGAN = [
         const u = klem((lt - 12.8) / 3.6), kx = lerp(560, 1060, u), ky = u < 0.5 ? lerp(600, 480, u * 2) : lerp(480, 285, (u - 0.5) * 2);
         kiki(kx, ky, 0.75, { jalan: u < 1, tangan: 'lari', ekspresi: u < 1 ? 'kaget' : 'senang' });
         sinar('#ffd23f', 20); panah(700, 520, 960, 330, '#ffd23f', 11, klem((lt - 12.4) / 0.6)); tanpaSinar();
-        teksKinetik(lt, 13, 'SEGERA KE TEMPAT TINGGI!', 700, 150, 64, { dari: 2.2, jeda: 0.03, warna: '#ffffff', glow: 'rgba(255,90,60,.9)', spasi: 3 });
+        teksKinetik(lt, 13, 'SEGERA KE TEMPAT TINGGI!', 700, 150, 64, { kilap: true, dari: 2.2, jeda: 0.03, warna: '#ffffff', glow: 'rgba(255,90,60,.9)', spasi: 3 });
         ctx.restore();
       }
     }
@@ -1521,7 +1601,7 @@ const ADEGAN = [
   {
     nama: 'Penutup', dur: 13, transisi: 'kilat', musik: lt => lt < 12 ? 'epik' : null, energi: lt => kf(lt, [[0, 0.8], [6.4, 1], [10.5, 0.8], [12.5, 0.2]]),
     teks: [[0.5, 6.2, 'Jadi, gempa terjadi karena lempeng Bumi bergerak, menumpuk energi, lalu melepaskannya tiba-tiba.'], [6.6, 12, 'Kita tidak bisa mencegahnya, tapi kita bisa selalu siap. Tetap waspada!']],
-    acara: [[0.8, sfx.pop], [2.4, sfx.pop], [4.0, sfx.pop], [6.6, () => sfx.hantam(41)], [11.8, () => sfx.braam(38)]],
+    acara: [[0.8, () => sfx.hudKetik(0)], [2.4, () => sfx.hudKetik(1)], [4.0, () => sfx.hudKetik(3)], [6.6, sfx.akhirMegah], [11.8, () => sfx.dentum(0.4)]],
     gambar(lt, dt) {
       goncang = 0; glitch = 0; bloom = 1.4; grain = 1; kilat = lt > 6.6 && lt < 6.9 ? 0.4 : 0;
       ctx.save(); kamera(kfh(lt, [[0, 1.05], [13, 0.95]]), 640, 360, kfh(lt, [[0, 0.03], [13, -0.02]]));
@@ -1531,13 +1611,14 @@ const ADEGAN = [
       for (let i = 0; i < 90; i++) { const a = i / 90 * 6.2832 + waktu * 0.25, x = 930 + Math.cos(a) * 290, y = 380 + Math.sin(a) * 90; if (Math.sin(a) < 0 && Math.hypot(x - 930, y - 380) < 200) continue; lingkarGlow(x, y, 6, 'rgba(255,190,110,A)', 0.8); }
       ctx.restore();
       ctx.restore();
+      debuMelayang(50, '255,210,160', 11, 0.9);
       const langkah = [[0.8, 'LEMPENG BERGERAK'], [2.4, 'ENERGI MENUMPUK'], [4.0, 'LEPAS TIBA-TIBA → BUMI BERGETAR']];
       langkah.forEach(([t0, s], i) => diSkala(360, 170 + i * 110, pop(lt, t0), () => {
         kartuKaca(-270, -38, 540, 76, 38, i === 2 ? 'rgba(255,100,40,.35)' : 'rgba(255,255,255,.1)', i === 2 ? 'rgba(255,160,90,.9)' : 'rgba(255,255,255,.4)');
         sinar(i === 2 ? '#ff7a2f' : '#9fdcff', 16); ctx.fillStyle = i === 2 ? '#ff7a2f' : '#3fa9ff'; bulat(-230, 0, 18); ctx.fill(); tanpaSinar(); teks(String(i + 1), -230, 2, 26, '#fff', FONT_JUDUL, 400);
         teks(s, 20, 3, 38, '#ffffff', FONT_JUDUL, 400, 'center', 440);
       }));
-      teksKinetik(lt, 6.8, 'TETAP SIAGA', 640, 560, 120, { dari: 3, jeda: 0.06, gradasi: ['#ffffff', '#ffd23f', '#ff7a2f'], glow: 'rgba(255,140,40,.9)', glowBesar: 36, spasi: 8 });
+      teksKinetik(lt, 6.8, 'TETAP SIAGA', 640, 560, 120, { kilap: true, dari: 3, jeda: 0.06, gradasi: ['#ffffff', '#ffd23f', '#ff7a2f'], glow: 'rgba(255,140,40,.9)', glowBesar: 36, spasi: 8 });
       if (lt > 12) { ctx.fillStyle = `rgba(0,0,0,${klem((lt - 12) / 1)})`; ctx.fillRect(0, 0, SW, SH); }
     }
   },
@@ -1559,7 +1640,7 @@ function siapkanWaktu() {
       geser = mulai - t0;
       titik.push([t0, mulai]);
       akhir = mulai + (d || (t1 - t0));
-      return { s, mulai, selesai: Math.max(mulai + (t1 - t0), mulai + d + 0.4) };
+      return { s, d, mulai, selesai: Math.max(mulai + (t1 - t0), mulai + d + 0.4) };
     });
     a.garis.forEach((g, i) => { if (a.garis[i + 1]) g.selesai = Math.min(g.selesai, a.garis[i + 1].mulai - 0.1); });
     a.durNyata = Math.max(a.dur + geser, akhir + 0.8);
@@ -1590,16 +1671,31 @@ function bungkus(s, maks) {
 function subtitle(a, r, x, y, ukuran, maks, gaya916) {
   for (const g of a.garis || []) {
     const al = muncul(r, g.mulai, g.selesai, 0.2, 0.2); if (al <= 0) continue;
-    L.save(); L.globalAlpha = al; L.font = `900 ${ukuran}px ${FONT_TEKS}`; L.textAlign = 'center'; L.textBaseline = 'middle';
-    const baris = bungkus(g.s, maks), lh = ukuran * 1.28;
+    // kata yang sedang diucapkan disorot (perkiraan dari panjang rekaman suara)
+    const bicara = g.d || (g.selesai - g.mulai) * 0.85, p = klem((r - g.mulai) / bicara);
+    const kata = g.s.split(' '), total = g.s.length;
+    let jalan = 0, kini = kata.length;
+    for (let k = 0; k < kata.length; k++) { jalan += kata[k].length + 1; if (jalan / total > p) { kini = k; break; } }
+    L.save(); L.globalAlpha = al; L.font = `900 ${ukuran}px ${FONT_TEKS}`; L.textBaseline = 'middle'; L.textAlign = 'left';
+    const spasi = L.measureText(' ').width, baris = [[]]; let lebar = 0;
+    kata.forEach((w, k) => { const lw = L.measureText(w).width; if (lebar + lw > maks && baris[baris.length - 1].length) { baris.push([]); lebar = 0; } baris[baris.length - 1].push([w, k, lw]); lebar += lw + spasi; });
+    const lh = ukuran * 1.3, lebarBaris = baris.map(b => b.reduce((s, q) => s + q[2], 0) + spasi * (b.length - 1));
     if (!gaya916) {
-      const w = Math.max(...baris.map(b => L.measureText(b).width)) + ukuran * 1.3, h = baris.length * lh + ukuran * 0.6;
+      const w = Math.max(...lebarBaris) + ukuran * 1.3, h = baris.length * lh + ukuran * 0.6;
       L.fillStyle = 'rgba(4,8,18,.72)'; L.beginPath(); L.roundRect ? L.roundRect(x - w / 2, y - h / 2, w, h, 14) : L.rect(x - w / 2, y - h / 2, w, h); L.fill();
-      L.fillStyle = '#fff'; baris.forEach((b, i) => L.fillText(b, x, y + (i - (baris.length - 1) / 2) * lh + 1));
-    } else {
-      L.lineJoin = 'round'; L.lineWidth = ukuran * 0.24; L.strokeStyle = 'rgba(0,0,0,.9)';
-      baris.forEach((b, i) => { const yy = y + (i - (baris.length - 1) / 2) * lh; L.strokeText(b, x, yy); L.fillStyle = i === 0 ? '#fff' : '#ffe08a'; L.fillText(b, x, yy); });
     }
+    baris.forEach((b, bi) => {
+      let px = x - lebarBaris[bi] / 2; const yy = y + (bi - (baris.length - 1) / 2) * lh + 1;
+      for (const [w, k, lw] of b) {
+        const sedang = k === kini, lewat = k < kini;
+        const warna = sedang ? '#ffd23f' : lewat ? '#ffffff' : 'rgba(255,255,255,.55)';
+        L.save(); L.translate(px + lw / 2, yy); const s = sedang && gaya916 ? 1.12 : 1; L.scale(s, s);
+        if (gaya916) { L.lineJoin = 'round'; L.lineWidth = ukuran * 0.24; L.strokeStyle = 'rgba(0,0,0,.9)'; L.strokeText(w, -lw / 2, 0); }
+        if (sedang) { L.shadowColor = 'rgba(255,190,40,.8)'; L.shadowBlur = 14; }
+        L.fillStyle = warna; L.fillText(w, -lw / 2, 0); L.restore();
+        px += lw + spasi;
+      }
+    });
     L.restore();
   }
 }
@@ -1622,6 +1718,8 @@ function gambarAdegan(a, r, lt, dt) {
   ctx.translate(gx, gy);
   a.gambar(lt, dt);
   ctx.restore();
+  const no = ADEGAN.indexOf(a);
+  if (no > 0 && no < ADEGAN.length - 1) kartuBab(no, a.nama, r);
   kilat = Math.max(kilat, TR.kilat); glitch = Math.max(glitch, TR.glitch);
   if (a._geser < 1) { const u = keluar3(a._geser); ['#ff7a2f', '#ffd23f', '#3fa9ff'].forEach((c, i) => { const v = klem(u * 1.4 - i * 0.15); ctx.fillStyle = c; ctx.fillRect(SW * v + i * 30 - 60, 0, SW + 200, SH); }); }
 }
