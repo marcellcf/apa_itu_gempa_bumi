@@ -23,6 +23,8 @@ import hashlib
 import io
 import json
 import os
+import zipfile
+from array import array
 import re
 import time
 import wave
@@ -60,6 +62,7 @@ FOLDER_SUARA = Path(__file__).parent / "suara_narator"
 GEMINI_MODEL = "gemini-3.8-flash-tts"
 GEMINI_MODEL_CADANGAN = "gemini-2.5-flash-preview-tts"
 GEMINI_SUARA = "Puck"
+ISI_PER_PERMINTAAN = 8   # berapa kalimat dibacakan dalam satu permintaan (hemat kuota harian)
 GAYA_DASAR = ("Indonesian narrator of a fun educational YouTube animation, speaking natural Indonesian "
               "with lively, expressive intonation that rises and falls, clear pacing, never monotone. Mood: ")
 
@@ -129,7 +132,7 @@ def identitas(teks, gaya):
     if PENYEDIA == "elevenlabs":
         data = ["elevenlabs", ELEVENLABS_VOICE, ELEVENLABS_MODEL, ELEVENLABS_PENGATURAN, teks]
     else:
-        data = ["gemini", GEMINI_SUARA, GAYA_DASAR + gaya, teks]
+        data = ["gemini", GEMINI_SUARA, GAYA_DASAR + gaya, teks]  # sama seperti versi sebelumnya: 6 rekaman yang sudah jadi tetap dipakai
     return hashlib.md5(json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:12]
 
 
@@ -166,8 +169,9 @@ def perlu_dibuat(teks, gaya, daftar):
         return True
     if not PENYEDIA:
         return False
-    if isi.get("penyedia") == "microsoft":
-        return True  # suara Microsoft lama diganti
+    peringkat = {"microsoft": 0, "gemini": 1, "elevenlabs": 2}
+    if peringkat.get(isi.get("penyedia"), 0) < peringkat[PENYEDIA]:
+        return True  # naik kelas: semua kalimat dibuat ulang dengan penyedia yang lebih bagus, supaya suaranya seragam
     # suara/gaya berubah untuk penyedia yang sama -> buat ulang
     return isi.get("penyedia") == PENYEDIA and isi["id"] != identitas(teks, gaya)
 
@@ -219,46 +223,110 @@ def minta_gemini(teks, gaya):
         "model": GEMINI_MODEL,
         "input": [{"type": "user_input", "content": [{
             "type": "text", "text": teks,
-            "annotations": [{"type": "speech_metadata", "style": GAYA_DASAR + gaya}],
+            "annotations": [{"type": "speech_metadata", "style": gaya}],
         }]}],
         "response_format": {"type": "audio"},
         "generation_config": {"speech_config": [{"voice": GEMINI_SUARA}]},
     }
-    r = requests.post("https://generativelanguage.googleapis.com/v1beta/interactions", headers=kepala, json=badan_baru, timeout=120)
+    r = requests.post("https://generativelanguage.googleapis.com/v1beta/interactions", headers=kepala, json=badan_baru, timeout=180)
     if r.status_code in (400, 404) and "quota" not in r.text.lower():
+        teks_lama = teks.replace("<long pause>", "...")
         badan_lama = {
-            "contents": [{"parts": [{"text": f"Bacakan dengan gaya: {GAYA_DASAR + gaya}\n\n{teks}"}]}],
+            "contents": [{"parts": [{"text": f"Bacakan dengan gaya: {gaya}\n\n{teks_lama}"}]}],
             "generationConfig": {"responseModalities": ["AUDIO"],
                                  "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": GEMINI_SUARA}}}},
         }
         r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_CADANGAN}:generateContent",
-                          headers=kepala, json=badan_lama, timeout=120)
+                          headers=kepala, json=badan_lama, timeout=180)
     return r
 
 
-def rekam_gemini(yang_kurang, progres):
-    for i, (teks, gaya) in enumerate(yang_kurang, start=1):
-        progres.progress((i - 1) / len(yang_kurang), text=f"Membuat suara narator (Gemini) {i}/{len(yang_kurang)}…")
-        for coba in range(6):
-            r = minta_gemini(teks, gaya)
-            if r.status_code == 200:
-                break
-            if r.status_code == 429:
-                if "PerDay" in r.text or "per day" in r.text.lower():
-                    raise KuotaHabis(f"{i - 1} dari {len(yang_kurang)} kalimat selesai")
-                jeda = re.search(r'"retryDelay":\s*"(\d+)', r.text)
-                tunggu = min(65, int(jeda.group(1)) + 2 if jeda else 20)
-                progres.progress((i - 1) / len(yang_kurang), text=f"Kuota gratis per menit penuh, menunggu {tunggu} detik… ({i - 1}/{len(yang_kurang)} selesai)")
-                time.sleep(tunggu)
-                continue
-            raise RuntimeError(f"Gemini menolak ({r.status_code}): {r.text[:300]}")
+def minta_dengan_sabar(teks, gaya, progres, keterangan):
+    """Kirim permintaan; kalau kuota per menit penuh, tunggu lalu coba lagi."""
+    for _ in range(8):
+        r = minta_gemini(teks, gaya)
+        if r.status_code == 200:
+            audio = cari_audio(r.json())
+            if not audio:
+                raise RuntimeError("Jawaban Gemini tidak berisi audio.")
+            return jadikan_wav(*audio)
+        if r.status_code == 429:
+            if "PerDay" in r.text or "per day" in r.text.lower():
+                raise KuotaHabis(keterangan)
+            jeda = re.search(r'"retryDelay":\s*"(\d+)', r.text)
+            tunggu = min(65, int(jeda.group(1)) + 2 if jeda else 20)
+            progres.progress(0.0, text=f"Kuota gratis per menit penuh, menunggu {tunggu} detik… ({keterangan})")
+            time.sleep(tunggu)
+            continue
+        raise RuntimeError(f"Gemini menolak ({r.status_code}): {r.text[:300]}")
+    raise KuotaHabis(keterangan)
+
+
+def belah_audio(wav_bytes, jumlah):
+    """Potong satu rekaman panjang jadi `jumlah` bagian, di jeda-jeda hening yang paling panjang."""
+    with wave.open(io.BytesIO(wav_bytes)) as w:
+        rate, kanal = w.getframerate(), w.getnchannels()
+        sampel = array("h")
+        sampel.frombytes(w.readframes(w.getnframes()))
+    if kanal == 2:
+        sampel = sampel[::2]
+    if jumlah == 1:
+        return [pcm_ke_wav(sampel.tobytes(), rate)]
+    jendela = max(1, int(rate * 0.02))  # potongan 20 milidetik
+    puncak = [max(map(abs, sampel[i:i + jendela])) for i in range(0, len(sampel), jendela)]
+    ambang = max(300, 0.05 * max(puncak))
+    jeda = []  # (panjang, awal, akhir) tiap bagian hening di tengah rekaman
+    i = 0
+    while i < len(puncak):
+        if puncak[i] < ambang:
+            j = i
+            while j < len(puncak) and puncak[j] < ambang:
+                j += 1
+            if i > 0 and j < len(puncak):
+                jeda.append((j - i, i, j))
+            i = j
         else:
-            raise KuotaHabis(f"{i - 1} dari {len(yang_kurang)} kalimat selesai")
-        audio = cari_audio(r.json())
-        if not audio:
-            raise RuntimeError("Jawaban Gemini tidak berisi audio.")
-        simpan_utuh(file_suara(teks, gaya), jadikan_wav(*audio))
-        catat(teks, gaya)
+            i += 1
+    if len(jeda) < jumlah - 1:
+        raise ValueError("jeda antar kalimat tidak cukup jelas")
+    terpilih = sorted(sorted(jeda, reverse=True)[:jumlah - 1], key=lambda g: g[1])
+    potong = [0] + [((a + b) // 2) * jendela for _, a, b in terpilih] + [len(sampel)]
+    hasil, sisa = [], int(rate * 0.08)
+    for awal, akhir in zip(potong, potong[1:]):
+        bagian = sampel[awal:akhir]
+        k = [n for n in range(0, len(bagian), jendela) if max(map(abs, bagian[n:n + jendela]), default=0) >= ambang]
+        if k:
+            bagian = bagian[max(0, k[0] - sisa):min(len(bagian), k[-1] + jendela + sisa)]
+        hasil.append(pcm_ke_wav(bagian.tobytes(), rate))
+    return hasil
+
+
+def rekam_gemini(yang_kurang, progres):
+    """Hemat kuota: beberapa kalimat dibacakan dalam SATU permintaan, lalu rekamannya dipotong per kalimat."""
+    kelompok = [yang_kurang[i:i + ISI_PER_PERMINTAAN] for i in range(0, len(yang_kurang), ISI_PER_PERMINTAAN)]
+    selesai = 0
+    for grup in kelompok:
+        ket = f"{selesai} dari {len(yang_kurang)} kalimat selesai"
+        progres.progress(selesai / len(yang_kurang), text=f"Membuat suara narator (Gemini)… {ket}")
+        naskah = "\n\n<long pause>\n\n".join(teks for teks, _ in grup)
+        gaya = (GAYA_DASAR + "the script contains separate sentences; after EACH sentence take a clear, long pause "
+                "(about one second) before the next. Mood of each sentence in order: "
+                + "; ".join(f"({n}) {g}" for n, (_, g) in enumerate(grup, start=1)))
+        wav_gabung = minta_dengan_sabar(naskah, gaya, progres, ket)
+        try:
+            potongan = belah_audio(wav_gabung, len(grup))
+        except ValueError:
+            potongan = None
+        if potongan:
+            for (teks, g), data in zip(grup, potongan):
+                simpan_utuh(file_suara(teks, g), data)
+                catat(teks, g)
+                selesai += 1
+        else:  # jarang terjadi: jeda tidak jelas, jadi rekam satu per satu
+            for teks, g in grup:
+                simpan_utuh(file_suara(teks, g), minta_dengan_sabar(teks, GAYA_DASAR + g, progres, f"{selesai} dari {len(yang_kurang)} kalimat selesai"))
+                catat(teks, g)
+                selesai += 1
 
 
 def rekam_elevenlabs(yang_kurang, progres):
@@ -1358,3 +1426,22 @@ if pakai_narator:
 # Ubah angka height kalau animasinya terpotong atau ada ruang kosong di layarmu.
 tinggi = 1000 if format_video == "916" else 800
 components.html(html_siap, height=tinggi, scrolling=False)
+
+# ---------------------------------------------------------------------------
+#  SIMPAN REKAMAN SECARA PERMANEN
+# ---------------------------------------------------------------------------
+ada_semua = file_tersedia()
+if ada_semua:
+    with st.expander(f"💾 Simpan rekaman narator permanen ({len(ada_semua)}/{len(NARASI)} kalimat sudah bersuara)"):
+        st.markdown(
+            "Rekaman di server Streamlit bisa hilang saat app di-restart. Supaya permanen:\n"
+            "1. Klik tombol di bawah untuk download zip rekaman.\n"
+            "2. Ekstrak zip-nya, nanti muncul folder **suara_narator**.\n"
+            "3. Upload folder itu ke repo GitHub-mu (sejajar dengan app.py)."
+        )
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for f in sorted(FOLDER_SUARA.iterdir()):
+                if f.suffix in (".wav", ".mp3", ".json"):
+                    z.write(f, f"suara_narator/{f.name}")
+        st.download_button("⬇️ Download rekaman suara (zip)", buf.getvalue(), file_name="suara_narator.zip", mime="application/zip")
